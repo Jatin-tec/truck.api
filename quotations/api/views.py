@@ -1,213 +1,21 @@
 from rest_framework import generics, status, permissions
-from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import Q
+
+from project.utils import (
+    success_response, error_response, validation_error_response, 
+    StandardizedResponseMixin
+)
 from quotations.models import (
-    QuotationRequest, Quotation, QuotationNegotiation, 
-    Cart, CartItem, QuotationItem, QuotationRequestItem
+    QuotationRequest, Quotation, QuotationNegotiation
 )
 from quotations.api.serializers import (
-    QuotationRequestSerializer, QuotationSerializer, QuotationNegotiationSerializer,
-    QuotationCreateSerializer, QuotationUpdateStatusSerializer, NegotiationCreateSerializer,
-    CartSerializer, CartItemSerializer, AddToCartSerializer, UpdateCartItemSerializer,
-    CreateQuotationRequestSerializer
+    QuotationRequestSerializer, QuotationSerializer,
+    QuotationCreateSerializer
 )
-from trucks.models import Truck
-from project.utils import success_response, error_response, validation_error_response, StandardizedResponseMixin
+from quotations.api.serializers import QuotationCreateSerializer
+from quotations.helper import IsCustomer, IsVendor, IsCustomerOrVendor
 
-class IsCustomer(permissions.BasePermission):
-    """Permission for customer-only endpoints"""
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'customer'
-
-class IsVendor(permissions.BasePermission):
-    """Permission for vendor-only endpoints"""
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'vendor'
-
-class IsCustomerOrVendor(permissions.BasePermission):
-    """Permission for customer or vendor endpoints"""
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ['customer', 'vendor']
-
-class CartView(APIView):
-    """Manage customer's cart"""
-    permission_classes = [IsCustomer]
-    
-    def get(self, request):
-        """Get customer's active cart"""
-        try:
-            cart = Cart.objects.get(customer=request.user, is_active=True)
-            serializer = CartSerializer(cart)
-            return success_response(data=serializer.data, message="Cart retrieved successfully")
-        except Cart.DoesNotExist:
-            return success_response(
-                data={'cart': None},
-                message='No active cart found'
-            )
-
-class AddToCartView(APIView):
-    """Add truck to cart"""
-    permission_classes = [IsCustomer]
-    
-    def post(self, request):
-        try:
-            serializer = AddToCartSerializer(data=request.data)
-            if not serializer.is_valid():
-                return validation_error_response(serializer.errors)
-            
-            truck = serializer.validated_data['truck_id']
-            quantity = serializer.validated_data['quantity']
-            item_weight = serializer.validated_data['item_weight']
-            item_special_instructions = serializer.validated_data.get('item_special_instructions', '')
-            
-            # Get or create cart for this vendor
-            cart, created = Cart.objects.get_or_create(
-                customer=request.user,
-                vendor=truck.vendor,
-                is_active=True
-            )
-            
-            # Check if customer already has a cart with a different vendor
-            existing_carts = Cart.objects.filter(
-                customer=request.user,
-                is_active=True
-            ).exclude(vendor=truck.vendor)
-            
-            if existing_carts.exists():
-                return error_response(
-                    f'You already have items from {existing_carts.first().vendor.name} in your cart. Please checkout or clear your current cart first.',
-                    status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Add or update cart item
-            cart_item, created = CartItem.objects.get_or_create(
-                cart=cart,
-                truck=truck,
-                defaults={
-                    'quantity': quantity,
-                    'item_weight': item_weight,
-                    'item_special_instructions': item_special_instructions
-                }
-            )
-            
-            if not created:
-                # Update existing item
-                cart_item.quantity += quantity
-                cart_item.item_weight += item_weight
-                cart_item.save()
-            
-            # Return updated cart
-            cart_serializer = CartSerializer(cart)
-            return success_response(
-                data=cart_serializer.data,
-                message="Item added to cart successfully"
-            )
-        except Exception as e:
-            return error_response(str(e), status.HTTP_400_BAD_REQUEST)
-
-class UpdateCartItemView(APIView):
-    """Update cart item"""
-    permission_classes = [IsCustomer]
-    
-    def put(self, request, item_id):
-        try:
-            cart_item = CartItem.objects.get(
-                id=item_id,
-                cart__customer=request.user,
-                cart__is_active=True
-            )
-        except CartItem.DoesNotExist:
-            return error_response('Cart item not found', status.HTTP_404_NOT_FOUND)
-        
-        try:
-            serializer = UpdateCartItemSerializer(data=request.data)
-            if not serializer.is_valid():
-                return validation_error_response(serializer.errors)
-            
-            cart_item.quantity = serializer.validated_data['quantity']
-            cart_item.item_weight = serializer.validated_data['item_weight']
-            cart_item.item_special_instructions = serializer.validated_data.get('item_special_instructions', '')
-            cart_item.save()
-            
-            # Return updated cart
-            cart_serializer = CartSerializer(cart_item.cart)
-            return success_response(
-                data=cart_serializer.data,
-                message='Cart item updated successfully'
-            )
-        except Exception as e:
-            return error_response(str(e), status.HTTP_400_BAD_REQUEST)
-
-class RemoveFromCartView(APIView):
-    """Remove item from cart"""
-    permission_classes = [IsCustomer]
-    
-    def delete(self, request, item_id):
-        try:
-            cart_item = CartItem.objects.get(
-                id=item_id,
-                cart__customer=request.user,
-                cart__is_active=True
-            )
-            cart = cart_item.cart
-            cart_item.delete()
-            
-            # If cart is empty, deactivate it
-            if cart.items.count() == 0:
-                cart.is_active = False
-                cart.save()
-                return Response({
-                    'message': 'Item removed from cart. Cart is now empty.',
-                    'cart': None
-                })
-            
-            # Return updated cart
-            cart_serializer = CartSerializer(cart)
-            return Response({
-                'message': 'Item removed from cart successfully',
-                'cart': cart_serializer.data
-            })
-            
-        except CartItem.DoesNotExist:
-            return Response({
-                'error': 'Cart item not found'
-            }, status=status.HTTP_404_NOT_FOUND)
-
-class ClearCartView(APIView):
-    """Clear all items from cart"""
-    permission_classes = [IsCustomer]
-    
-    def delete(self, request):
-        try:
-            cart = Cart.objects.get(customer=request.user, is_active=True)
-            cart.clear()
-            cart.is_active = False
-            cart.save()
-            
-            return Response({
-                'message': 'Cart cleared successfully'
-            })
-        except Cart.DoesNotExist:
-            return Response({
-                'message': 'No active cart found'
-            }, status=status.HTTP_404_NOT_FOUND)
-
-# Quotation Request Views (Customer)
-class QuotationRequestCreateView(generics.CreateAPIView):
-    """Customer creates a quotation request from cart"""
-    serializer_class = CreateQuotationRequestSerializer
-    permission_classes = [IsCustomer]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        quotation_request = serializer.save()
-        
-        # Return the created quotation request
-        response_serializer = QuotationRequestSerializer(quotation_request)
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
 
 class CustomerQuotationRequestsView(generics.ListAPIView):
     """List quotation requests for authenticated customer"""
@@ -219,6 +27,7 @@ class CustomerQuotationRequestsView(generics.ListAPIView):
             customer=self.request.user,
             is_active=True
         ).order_by('-created_at')
+
 
 class QuotationRequestDetailView(generics.RetrieveAPIView):
     """Get details of a specific quotation request"""
@@ -232,6 +41,7 @@ class QuotationRequestDetailView(generics.RetrieveAPIView):
         else:  # vendor
             return QuotationRequest.objects.filter(vendor=user, is_active=True)
 
+
 # Quotation Views
 class VendorQuotationRequestsView(generics.ListAPIView):
     """List quotation requests for vendor"""
@@ -244,110 +54,79 @@ class VendorQuotationRequestsView(generics.ListAPIView):
             is_active=True
         ).order_by('-created_at')
 
-class QuotationCreateView(APIView):
-    """Vendor creates a quotation for a multi-truck request"""
-    permission_classes = [IsVendor]
+
+class QuotationCreateView(APIView, StandardizedResponseMixin):
+    """
+    Create quotation with the new flow:
+    1. Create/find quotation request based on search parameters
+    2. Add quotation to that request
+    """
+    permission_classes = [IsCustomer]
 
     def post(self, request):
-        quotation_request_id = request.data.get('quotation_request_id')
-        if not quotation_request_id:
-            return Response({
-                'error': 'quotation_request_id is required'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            quotation_request = QuotationRequest.objects.get(
-                id=quotation_request_id,
-                vendor=request.user,
-                is_active=True
-            )
-        except QuotationRequest.DoesNotExist:
-            return Response({
-                'error': 'Quotation request not found or you are not authorized'
-            }, status=status.HTTP_404_NOT_FOUND)
-        
-        # Check if quotation already exists
-        if Quotation.objects.filter(
-            quotation_request=quotation_request,
-            vendor=request.user
-        ).exists():
-            return Response({
-                'error': 'You have already created a quotation for this request'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Validate quotation data
-        required_fields = [
-            'total_base_price', 'total_fuel_charges', 'total_toll_charges',
-            'total_loading_charges', 'total_unloading_charges', 'total_additional_charges'
-        ]
-        
-        for field in required_fields:
-            if field not in request.data:
-                return Response({
-                    'error': f'{field} is required'
-                }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Validate quotation items
-        quotation_items_data = request.data.get('items', [])
-        if not quotation_items_data:
-            return Response({
-                'error': 'Quotation items are required'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Validate that all requested trucks have quotation items
-        request_items = quotation_request.items.all()
-        request_truck_ids = set(item.truck.id for item in request_items)
-        provided_truck_ids = set(item.get('truck_id') for item in quotation_items_data)
-        
-        if request_truck_ids != provided_truck_ids:
-            return Response({
-                'error': 'You must provide pricing for all requested trucks'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Create quotation
-        quotation = Quotation.objects.create(
-            quotation_request=quotation_request,
-            vendor=request.user,
-            total_base_price=request.data['total_base_price'],
-            total_fuel_charges=request.data['total_fuel_charges'],
-            total_toll_charges=request.data['total_toll_charges'],
-            total_loading_charges=request.data['total_loading_charges'],
-            total_unloading_charges=request.data['total_unloading_charges'],
-            total_additional_charges=request.data['total_additional_charges'],
-            terms_and_conditions=request.data.get('terms_and_conditions', ''),
-            validity_hours=request.data.get('validity_hours', 24),
-            customer_suggested_price=quotation_request.suggested_total_price,
-            vendor_response_to_suggestion=request.data.get('vendor_response_to_suggestion', ''),
-            status='sent'
+        """Create quotation using the new flow"""
+        serializer = QuotationCreateSerializer(
+            data=request.data, 
+            context={'request': request}
         )
         
-        # Create quotation items
-        for item_data in quotation_items_data:
-            try:
-                truck = Truck.objects.get(id=item_data['truck_id'], vendor=request.user)
-                request_item = quotation_request.items.get(truck=truck)
-                
-                QuotationItem.objects.create(
-                    quotation=quotation,
-                    truck=truck,
-                    quantity=request_item.quantity,
-                    unit_base_price=item_data.get('unit_base_price', 0),
-                    unit_fuel_charges=item_data.get('unit_fuel_charges', 0),
-                    unit_toll_charges=item_data.get('unit_toll_charges', 0),
-                    unit_loading_charges=item_data.get('unit_loading_charges', 0),
-                    unit_unloading_charges=item_data.get('unit_unloading_charges', 0),
-                    unit_additional_charges=item_data.get('unit_additional_charges', 0),
-                    item_notes=item_data.get('item_notes', '')
-                )
-            except (Truck.DoesNotExist, QuotationRequestItem.DoesNotExist):
-                quotation.delete()  # Cleanup
-                return Response({
-                    'error': f'Invalid truck_id: {item_data["truck_id"]}'
-                }, status=status.HTTP_400_BAD_REQUEST)
+        if not serializer.is_valid():
+            return validation_error_response(serializer.errors)
         
-        # Return created quotation
-        serializer = QuotationSerializer(quotation)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        try:
+            # Create quotation and quotation request
+            result = serializer.save()
+            
+            quotation_request = result['quotation_request']
+            quotation = result['quotation']
+            created_new_request = result['created_new_request']
+            
+            # Prepare response message
+            if created_new_request:
+                message = f"New quotation request created and quotation added for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+            else:
+                message = f"Quotation added to existing request for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+            
+            # Prepare response data
+            response_data = {
+                'quotation_request': {
+                    'id': quotation_request.id,
+                    'origin_pincode': quotation_request.origin_pincode,
+                    'destination_pincode': quotation_request.destination_pincode,
+                    'pickup_date': quotation_request.pickup_date.isoformat(),
+                    'drop_date': quotation_request.drop_date.isoformat(),
+                    'weight': str(quotation_request.weight),
+                    'weight_unit': quotation_request.weight_unit,
+                    'vehicle_type': quotation_request.vehicle_type,
+                    'urgency_level': quotation_request.urgency_level,
+                    'total_quotations': quotation_request.get_total_quotations(),
+                    'created_at': quotation_request.created_at.isoformat(),
+                },
+                'quotation': {
+                    'id': quotation.id,
+                    'vendor_id': quotation.vendor.id,
+                    'vendor_name': quotation.vendor_name,
+                    'items': quotation.items,
+                    'total_amount': str(quotation.total_amount),
+                    'status': quotation.status,
+                    'created_at': quotation.created_at.isoformat(),
+                },
+                'created_new_request': created_new_request,
+                'message': message
+            }
+            
+            return success_response(
+                data=response_data,
+                message=message,
+                status_code=status.HTTP_201_CREATED
+            )
+            
+        except Exception as e:
+            return error_response(
+                error=f"Failed to create quotation: {str(e)}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 class QuotationListView(generics.ListAPIView):
     """List quotations for a specific quotation request"""
@@ -371,6 +150,7 @@ class QuotationListView(generics.ListAPIView):
             
         return quotations.order_by('-created_at')
 
+
 class QuotationDetailView(generics.RetrieveAPIView):
     """Get details of a specific quotation"""
     serializer_class = QuotationSerializer
@@ -386,6 +166,7 @@ class QuotationDetailView(generics.RetrieveAPIView):
         else:  # vendor
             return Quotation.objects.filter(vendor=user, is_active=True)
 
+
 class VendorQuotationsView(generics.ListAPIView):
     """List all quotations created by vendor"""
     serializer_class = QuotationSerializer
@@ -397,6 +178,7 @@ class VendorQuotationsView(generics.ListAPIView):
             is_active=True
         ).order_by('-created_at')
 
+
 class CustomerQuotationsView(generics.ListAPIView):
     """List all quotations received by customer"""
     serializer_class = QuotationSerializer
@@ -407,6 +189,7 @@ class CustomerQuotationsView(generics.ListAPIView):
             quotation_request__customer=self.request.user,
             is_active=True
         ).order_by('-created_at')
+
 
 # Quotation Status Management
 class QuotationAcceptView(APIView):
@@ -442,6 +225,7 @@ class QuotationAcceptView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+
 class QuotationRejectView(APIView):
     """Customer rejects a quotation"""
     permission_classes = [IsCustomer]
@@ -466,39 +250,42 @@ class QuotationRejectView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-# Negotiation Views
-class NegotiationCreateView(generics.CreateAPIView):
-    """Create a negotiation for a quotation"""
-    serializer_class = NegotiationCreateSerializer
-    permission_classes = [IsCustomerOrVendor]
 
-class NegotiationListView(generics.ListAPIView):
-    """List negotiations for a specific quotation"""
-    serializer_class = QuotationNegotiationSerializer
-    permission_classes = [IsCustomerOrVendor]
+# Negotiation Views
+# class NegotiationCreateView(generics.CreateAPIView):
+#     """Create a negotiation for a quotation"""
+#     serializer_class = NegotiationCreateSerializer
+#     permission_classes = [IsCustomerOrVendor]
+
+
+# class NegotiationListView(generics.ListAPIView):
+#     """List negotiations for a specific quotation"""
+#     serializer_class = QuotationNegotiationSerializer
+#     permission_classes = [IsCustomerOrVendor]
     
-    def get_queryset(self):
-        quotation_id = self.kwargs['quotation_id']
-        user = self.request.user
+#     def get_queryset(self):
+#         quotation_id = self.kwargs['quotation_id']
+#         user = self.request.user
         
-        # Ensure user has access to this quotation
-        try:
-            if user.role == 'customer':
-                quotation = Quotation.objects.get(
-                    id=quotation_id,
-                    quotation_request__customer=user
-                )
-            else:  # vendor
-                quotation = Quotation.objects.get(
-                    id=quotation_id,
-                    vendor=user
-                )
-        except Quotation.DoesNotExist:
-            return QuotationNegotiation.objects.none()
+#         # Ensure user has access to this quotation
+#         try:
+#             if user.role == 'customer':
+#                 quotation = Quotation.objects.get(
+#                     id=quotation_id,
+#                     quotation_request__customer=user
+#                 )
+#             else:  # vendor
+#                 quotation = Quotation.objects.get(
+#                     id=quotation_id,
+#                     vendor=user
+#                 )
+#         except Quotation.DoesNotExist:
+#             return QuotationNegotiation.objects.none()
         
-        return QuotationNegotiation.objects.filter(
-            quotation_id=quotation_id
-        ).order_by('created_at')
+#         return QuotationNegotiation.objects.filter(
+#             quotation_id=quotation_id
+#         ).order_by('created_at')
+
 
 class AcceptNegotiationView(APIView):
     """Accept a negotiation and update quotation"""

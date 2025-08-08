@@ -1,37 +1,24 @@
 from django.contrib import admin
 from quotations.models import (
     QuotationRequest, Quotation, QuotationNegotiation, 
-    QuotationRequestItem, Cart, CartItem, QuotationItem,
     # New route-based models
     Route, RouteStop, RoutePricing, CustomerEnquiry, 
     PriceRange, VendorEnquiryRequest
 )
 
-class QuotationRequestItemInline(admin.TabularInline):
-    model = QuotationRequestItem
-    extra = 0
-    readonly_fields = ['created_at']
-
 @admin.register(QuotationRequest)
 class QuotationRequestAdmin(admin.ModelAdmin):
-    list_display = ['id', 'customer', 'vendor', 'pickup_address', 'delivery_address', 'pickup_date', 'created_at']
-    list_filter = ['pickup_date', 'is_active', 'vendor']
-    search_fields = ['customer__name', 'vendor__name']
+    list_display = ['id', 'customer', 'origin_pincode', 'destination_pincode', 'pickup_date', 'drop_date', 'created_at']
+    list_filter = ['pickup_date', 'drop_date', 'is_active', 'urgency_level', 'vehicle_type']
+    search_fields = ['customer__name', 'origin_pincode', 'destination_pincode']
     readonly_fields = ['created_at', 'updated_at']
-    inlines = [QuotationRequestItemInline]
-
-class QuotationItemInline(admin.TabularInline):
-    model = QuotationItem
-    extra = 0
-    readonly_fields = ['total_price', 'created_at']
 
 @admin.register(Quotation)
 class QuotationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'vendor', 'total_amount', 'status', 'created_at']
+    list_display = ['id', 'vendor_name', 'total_amount', 'status', 'created_at']
     list_filter = ['status', 'created_at']
-    search_fields = ['vendor__name', 'quotation_request__customer__name']
-    readonly_fields = ['total_amount', 'created_at', 'updated_at']
-    inlines = [QuotationItemInline]
+    search_fields = ['vendor_name', 'quotation_request__customer__name']
+    readonly_fields = ['created_at', 'updated_at']
 
 @admin.register(QuotationNegotiation)
 class QuotationNegotiationAdmin(admin.ModelAdmin):
@@ -39,39 +26,8 @@ class QuotationNegotiationAdmin(admin.ModelAdmin):
     list_filter = ['initiated_by', 'created_at']
     readonly_fields = ['created_at']
 
-class CartItemInline(admin.TabularInline):
-    model = CartItem
-    extra = 0
-    readonly_fields = ['created_at', 'updated_at']
+# Cart models have been removed from the system
 
-@admin.register(Cart)
-class CartAdmin(admin.ModelAdmin):
-    list_display = ['id', 'customer', 'vendor', 'is_active', 'created_at']
-    list_filter = ['is_active', 'created_at']
-    search_fields = ['customer__name', 'vendor__name']
-    readonly_fields = ['created_at', 'updated_at']
-    inlines = [CartItemInline]
-
-@admin.register(CartItem)
-class CartItemAdmin(admin.ModelAdmin):
-    list_display = ['id', 'cart', 'truck', 'quantity', 'item_weight', 'created_at']
-    list_filter = ['created_at']
-    search_fields = ['cart__customer__name', 'truck__registration_number']
-    readonly_fields = ['created_at', 'updated_at']
-
-@admin.register(QuotationRequestItem)
-class QuotationRequestItemAdmin(admin.ModelAdmin):
-    list_display = ['id', 'quotation_request', 'truck', 'quantity', 'item_weight', 'created_at']
-    list_filter = ['created_at']
-    search_fields = ['quotation_request__customer__name', 'truck__registration_number']
-    readonly_fields = ['created_at']
-
-@admin.register(QuotationItem)
-class QuotationItemAdmin(admin.ModelAdmin):
-    list_display = ['id', 'quotation', 'truck', 'quantity', 'total_price', 'created_at']
-    list_filter = ['created_at']
-    search_fields = ['quotation__vendor__name', 'truck__registration_number']
-    readonly_fields = ['total_price', 'created_at']
 
 # NEW TRACKING TRUCKS WORKFLOW - Admin Classes
 

@@ -93,7 +93,7 @@ def truck_search(request):
         )
         
         # Get available trucks from matching routes
-        available_trucks = []
+        truck_route_combinations = {}  # Dictionary to store best route for each truck
         
         for route_info in matching_routes:
             route = route_info['route']
@@ -107,6 +107,7 @@ def truck_search(request):
             )
             
             print(f"Found {vendor_trucks.count()} trucks for vendor {vendor.name or vendor.email} on route {route.route_name}")
+            print(f"After filtering, {vendor_trucks.filter(capacity__gte=weight / number_of_trucks).count()} trucks can handle the weight")
             
             # Filter by truck requirements
             if data.get('truck_type'):
@@ -138,6 +139,15 @@ def truck_search(request):
                     # Fallback to base price per km
                     estimated_price = float(truck.base_price_per_km) * total_distance
                 
+                # Check if we already have this truck with a better price
+                truck_key = truck.id
+                if truck_key in truck_route_combinations:
+                    if estimated_price >= truck_route_combinations[truck_key]['estimated_price']:
+                        print(f"Skipping truck {truck.registration_number} on route {route.route_name} (price: {estimated_price}) - already have better price: {truck_route_combinations[truck_key]['estimated_price']}")
+                        continue  # Skip this route as we have a better price for this truck
+                    else:
+                        print(f"Updating truck {truck.registration_number} with better route {route.route_name} (price: {estimated_price} vs {truck_route_combinations[truck_key]['estimated_price']})")
+                
                 # Serialize truck data
                 truck_data = TruckListSerializer(truck).data
                 truck_data.update({
@@ -166,7 +176,11 @@ def truck_search(request):
                         'unloading_charges': float(route_pricing.unloading_charges),
                     })
                 
-                available_trucks.append(truck_data)
+                # Store the best option for this truck
+                truck_route_combinations[truck_key] = truck_data
+        
+        # Convert to list
+        available_trucks = list(truck_route_combinations.values())
         
         # Sort by estimated price
         available_trucks.sort(key=lambda x: x['estimated_price'])

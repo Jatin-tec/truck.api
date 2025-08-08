@@ -3,41 +3,47 @@ from django.conf import settings
 from trucks.models import Truck, TruckType
 
 class QuotationRequest(models.Model):
-    """Customer's initial request for quotation - now supports multiple trucks from same vendor"""
+    """Customer's order request - unique for origin-destination and pickup-drop date"""
     customer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='quotation_requests',
         limit_choices_to={'role': 'customer'}
     )
-    vendor = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='received_quotation_requests',
-        limit_choices_to={'role': 'vendor'}
-    )
+    
+    # Search parameters that make this request unique
+    origin_pincode = models.CharField(max_length=10, default='000000')
+    destination_pincode = models.CharField(max_length=10, default='000000') 
+    pickup_date = models.DateField(default='2024-01-01')
+    drop_date = models.DateField(default='2024-01-01')
+    weight = models.DecimalField(max_digits=8, decimal_places=2, help_text="Weight", default=0)
+    weight_unit = models.CharField(max_length=10, choices=[
+        ('kg', 'Kilogram'),
+        ('ton', 'Ton'),
+        ('lbs', 'Pounds')
+    ], default='kg')
+    vehicle_type = models.CharField(max_length=50, help_text="Type of vehicle needed", default='Truck')
+    urgency_level = models.CharField(max_length=20, choices=[
+        ('low', 'Low'),
+        ('medium', 'Medium'), 
+        ('high', 'High'),
+        ('urgent', 'Urgent')
+    ], default='medium')
     
     # Pickup details
-    pickup_latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    pickup_longitude = models.DecimalField(max_digits=9, decimal_places=6)
-    pickup_address = models.TextField()
-    pickup_date = models.DateTimeField()
+    pickup_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    pickup_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    pickup_address = models.TextField(blank=True)
     
     # Delivery details
-    delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6)
-    delivery_address = models.TextField()
-    expected_delivery_date = models.DateTimeField()
+    delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    delivery_address = models.TextField(blank=True)
     
     # Additional details
     cargo_description = models.TextField(blank=True)
-    estimated_total_weight = models.DecimalField(max_digits=8, decimal_places=2, default=0, help_text="Total weight in tons")
     special_instructions = models.TextField(blank=True)
     distance_km = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
-    
-    # Customer's suggested pricing
-    suggested_total_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text="Customer's suggested total price")
-    suggested_price_notes = models.TextField(blank=True, help_text="Customer's notes about suggested pricing")
     
     # Status
     is_active = models.BooleanField(default=True)
@@ -46,23 +52,18 @@ class QuotationRequest(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        # Ensure uniqueness based on route and dates
+        unique_together = ['customer', 'origin_pincode', 'destination_pincode', 'pickup_date', 'drop_date']
 
     def __str__(self):
-        return f"Quote Request {self.id} by {self.customer.name} to {self.vendor.name}"
+        return f"Quote Request {self.id} - {self.origin_pincode} to {self.destination_pincode} on {self.pickup_date}"
 
-    def get_total_trucks(self):
-        """Get total number of trucks in this request"""
-        return self.items.aggregate(total=models.Sum('quantity'))['total'] or 0
-
-    def get_total_capacity(self):
-        """Get total capacity of all trucks in this request"""
-        total = 0
-        for item in self.items.all():
-            total += item.truck.capacity * item.quantity
-        return total
+    def get_total_quotations(self):
+        """Get total number of quotations for this request"""
+        return self.quotations.count()
 
 class Quotation(models.Model):
-    """Vendor's response to quotation request - now handles multiple trucks"""
+    """Vendor's quotation for a quotation request"""
     STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('sent', 'Sent'),
@@ -83,20 +84,29 @@ class Quotation(models.Model):
         related_name='quotations',
         limit_choices_to={'role': 'vendor'}
     )
+    vendor_name = models.CharField(max_length=200, default='Unknown Vendor')
+    
+    # Items (vehicles) included in this quotation
+    items = models.JSONField(default=list, help_text="List of vehicle items with details")
     
     # Overall pricing details
-    total_base_price = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Combined base price for all trucks")
-    total_fuel_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_loading_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_unloading_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total_additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     
     # Terms
     terms_and_conditions = models.TextField(blank=True)
     validity_hours = models.PositiveIntegerField(default=24, help_text="Quote validity in hours")
     
+    # Status
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Quotation {self.id} by {self.vendor_name} - ₹{self.total_amount}"
     # Response to customer's suggested price
     customer_suggested_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     vendor_response_to_suggestion = models.TextField(blank=True, help_text="Vendor's response to customer's suggested price")
@@ -122,42 +132,7 @@ class Quotation(models.Model):
         )
         super().save(*args, **kwargs)
 
-class QuotationItem(models.Model):
-    """Individual truck pricing in a quotation"""
-    quotation = models.ForeignKey(Quotation, on_delete=models.CASCADE, related_name='items')
-    truck = models.ForeignKey(Truck, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
-    
-    # Per-truck pricing
-    unit_base_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Base price per truck")
-    unit_fuel_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    unit_toll_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    unit_loading_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    unit_unloading_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    unit_additional_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    
-    # Calculated totals for this truck type
-    total_price = models.DecimalField(max_digits=10, decimal_places=2)
-    
-    # Item-specific terms
-    item_notes = models.TextField(blank=True)
-    
-    created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        unique_together = ['quotation', 'truck']
-
-    def __str__(self):
-        return f"{self.quantity}x {self.truck.registration_number} - ₹{self.total_price}"
-
-    def save(self, *args, **kwargs):
-        """Calculate total price for this item"""
-        unit_total = (
-            self.unit_base_price + self.unit_fuel_charges + self.unit_toll_charges +
-            self.unit_loading_charges + self.unit_unloading_charges + self.unit_additional_charges
-        )
-        self.total_price = unit_total * self.quantity
-        super().save(*args, **kwargs)
 
 class QuotationNegotiation(models.Model):
     """Track negotiation history between customer and vendor"""
@@ -191,100 +166,7 @@ class QuotationNegotiation(models.Model):
     def __str__(self):
         return f"Negotiation for Quotation {self.quotation.id} by {self.initiated_by}"
 
-class QuotationRequestItem(models.Model):
-    """Individual truck items in a quotation request (like cart items)"""
-    quotation_request = models.ForeignKey(
-        QuotationRequest, 
-        on_delete=models.CASCADE, 
-        related_name='items'
-    )
-    truck = models.ForeignKey(Truck, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField(default=1, help_text="Number of trucks of this type needed")
-    
-    # Item-specific details
-    item_weight = models.DecimalField(max_digits=8, decimal_places=2, help_text="Weight for this truck type in tons")
-    item_special_instructions = models.TextField(blank=True, help_text="Special instructions for this truck type")
-    
-    created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        unique_together = ['quotation_request', 'truck']
-
-    def __str__(self):
-        return f"{self.quantity}x {self.truck.registration_number} for Request {self.quotation_request.id}"
-
-    def get_total_capacity(self):
-        """Get total capacity for this item"""
-        return self.truck.capacity * self.quantity
-
-class Cart(models.Model):
-    """Temporary cart for customers before creating quotation request"""
-    customer = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='carts',
-        limit_choices_to={'role': 'customer'}
-    )
-    vendor = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='customer_carts',
-        limit_choices_to={'role': 'vendor'}
-    )
-    
-    # Cart will be cleared after quotation request is created
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = ['customer', 'vendor']  # One cart per vendor per customer
-
-    def __str__(self):
-        return f"Cart for {self.customer.name} with {self.vendor.name}"
-
-    def get_total_trucks(self):
-        """Get total number of trucks in cart"""
-        return self.items.aggregate(total=models.Sum('quantity'))['total'] or 0
-
-    def get_total_capacity(self):
-        """Get total capacity of all trucks in cart"""
-        total = 0
-        for item in self.items.all():
-            total += item.truck.capacity * item.quantity
-        return total
-
-    def clear(self):
-        """Clear all items from cart"""
-        self.items.all().delete()
-
-class CartItem(models.Model):
-    """Individual truck items in customer's cart"""
-    cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name='items')
-    truck = models.ForeignKey(Truck, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField(default=1)
-    
-    # Item-specific requirements
-    item_weight = models.DecimalField(max_digits=8, decimal_places=2, help_text="Weight for this truck type in tons")
-    item_special_instructions = models.TextField(blank=True)
-    
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = ['cart', 'truck']
-
-    def __str__(self):
-        return f"{self.quantity}x {self.truck.registration_number} in {self.cart.customer.name}'s cart"
-
-    def get_total_capacity(self):
-        """Get total capacity for this cart item"""
-        return self.truck.capacity * self.quantity
-
-    def get_estimated_price(self):
-        """Get estimated price for this cart item based on truck's base price"""
-        # This is just an estimate, actual pricing comes from vendor quotation
-        return self.truck.base_price_per_km * self.quantity
 
 # ============ ROUTE-BASED PRICING MODELS ============
 
@@ -431,16 +313,16 @@ class CustomerEnquiry(models.Model):
     )
     
     # Trip details
-    pickup_latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    pickup_longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    pickup_latitude = models.DecimalField(max_digits=9, decimal_places=6, default=0.0)
+    pickup_longitude = models.DecimalField(max_digits=9, decimal_places=6, default=0.0)
     pickup_address = models.TextField()
     pickup_city = models.CharField(max_length=100)
     pickup_state = models.CharField(max_length=100)
     pickup_pincode = models.CharField(max_length=10, null=True, blank=True, help_text="Pickup pincode")
     pickup_date = models.DateTimeField()
     
-    delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6, default=0.0)
+    delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6, default=0.0)
     delivery_address = models.TextField()
     delivery_city = models.CharField(max_length=100)
     delivery_state = models.CharField(max_length=100)
