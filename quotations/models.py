@@ -8,7 +8,8 @@ class QuotationRequest(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='quotation_requests',
-        limit_choices_to={'role': 'customer'}
+        limit_choices_to={'role': 'customer'},
+        null=True, blank=True,
     )
     
     # Search parameters that make this request unique
@@ -76,7 +77,9 @@ class Quotation(models.Model):
     quotation_request = models.ForeignKey(
         QuotationRequest, 
         on_delete=models.CASCADE, 
-        related_name='quotations'
+        related_name='quotations',
+        null=True,
+        blank=True,
     )
     vendor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -85,32 +88,16 @@ class Quotation(models.Model):
         limit_choices_to={'role': 'vendor'}
     )
     vendor_name = models.CharField(max_length=200, default='Unknown Vendor')
-    
     # Items (vehicles) included in this quotation
     items = models.JSONField(default=list, help_text="List of vehicle items with details")
-    
     # Overall pricing details
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
-    
     # Terms
     terms_and_conditions = models.TextField(blank=True)
     validity_hours = models.PositiveIntegerField(default=24, help_text="Quote validity in hours")
-    
-    # Status
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"Quotation {self.id} by {self.vendor_name} - ₹{self.total_amount}"
     # Response to customer's suggested price
     customer_suggested_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     vendor_response_to_suggestion = models.TextField(blank=True, help_text="Vendor's response to customer's suggested price")
-    
     # Status
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     is_active = models.BooleanField(default=True)
@@ -123,15 +110,6 @@ class Quotation(models.Model):
 
     def __str__(self):
         return f"Quotation {self.id} - ₹{self.total_amount}"
-
-    def save(self, *args, **kwargs):
-        """Calculate total amount before saving"""
-        self.total_amount = (
-            self.total_base_price + self.total_fuel_charges + self.total_toll_charges + 
-            self.total_loading_charges + self.total_unloading_charges + self.total_additional_charges
-        )
-        super().save(*args, **kwargs)
-
 
 
 class QuotationNegotiation(models.Model):
@@ -166,9 +144,6 @@ class QuotationNegotiation(models.Model):
     def __str__(self):
         return f"Negotiation for Quotation {self.quotation.id} by {self.initiated_by}"
 
-
-
-# ============ ROUTE-BASED PRICING MODELS ============
 
 class Route(models.Model):
     """Vendor's predefined routes with stops"""
@@ -219,6 +194,7 @@ class Route(models.Model):
     def __str__(self):
         return f"{self.vendor.name}: {self.route_name}"
 
+
 class RouteStop(models.Model):
     """Intermediate stops in a route"""
     route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='stops')
@@ -247,6 +223,7 @@ class RouteStop(models.Model):
 
     def __str__(self):
         return f"{self.route.route_name} - Stop {self.stop_order}: {self.stop_city}"
+
 
 class RoutePricing(models.Model):
     """Pricing for different segments of a route"""
@@ -291,6 +268,7 @@ class RoutePricing(models.Model):
         """Calculate total price for this segment"""
         return (self.base_price + self.fuel_charges + self.toll_charges + 
                 self.loading_charges + self.unloading_charges)
+
 
 class CustomerEnquiry(models.Model):
     """Customer enquiry without vendor visibility"""
@@ -371,6 +349,7 @@ class CustomerEnquiry(models.Model):
     def __str__(self):
         return f"Enquiry {self.id}: {self.pickup_city} to {self.delivery_city} ({self.customer.name})"
 
+
 class PriceRange(models.Model):
     """System-generated price ranges for customer enquiries"""
     CHANCE_LEVELS = [
@@ -415,6 +394,7 @@ class PriceRange(models.Model):
 
     def __str__(self):
         return f"₹{self.min_price}-₹{self.max_price} ({self.chance_of_getting_deal} chance)"
+
 
 class VendorEnquiryRequest(models.Model):
     """Manager's request to vendors for specific enquiry"""

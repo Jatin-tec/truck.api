@@ -6,18 +6,18 @@ from project.utils import (
     success_response, error_response, validation_error_response, 
     StandardizedResponseMixin
 )
+from project.permissions import IsCustomer, IsVendor, IsCustomerOrVendor
 from quotations.models import (
     QuotationRequest, Quotation, QuotationNegotiation
 )
 from quotations.api.serializers import (
     QuotationRequestSerializer, QuotationSerializer,
-    QuotationCreateSerializer
+    QuotationCreateSerializer, QuotationCreateV2Serializer, 
+    QuotationRequestDetailSerializer
 )
-from quotations.api.serializers import QuotationCreateSerializer
-from quotations.helper import IsCustomer, IsVendor, IsCustomerOrVendor
 
 
-class CustomerQuotationRequestsView(generics.ListAPIView):
+class CustomerQuotationRequestsView(StandardizedResponseMixin, generics.ListAPIView):
     """List quotation requests for authenticated customer"""
     serializer_class = QuotationRequestSerializer
     permission_classes = [IsCustomer]
@@ -29,9 +29,9 @@ class CustomerQuotationRequestsView(generics.ListAPIView):
         ).order_by('-created_at')
 
 
-class QuotationRequestDetailView(generics.RetrieveAPIView):
+class QuotationRequestDetailView(StandardizedResponseMixin, generics.RetrieveAPIView):
     """Get details of a specific quotation request"""
-    serializer_class = QuotationRequestSerializer
+    serializer_class = QuotationRequestDetailSerializer
     permission_classes = [IsCustomerOrVendor]
     
     def get_queryset(self):
@@ -43,7 +43,7 @@ class QuotationRequestDetailView(generics.RetrieveAPIView):
 
 
 # Quotation Views
-class VendorQuotationRequestsView(generics.ListAPIView):
+class VendorQuotationRequestsView(StandardizedResponseMixin, generics.ListAPIView):
     """List quotation requests for vendor"""
     serializer_class = QuotationRequestSerializer
     permission_classes = [IsVendor]
@@ -60,15 +60,27 @@ class QuotationCreateView(APIView, StandardizedResponseMixin):
     Create quotation with the new flow:
     1. Create/find quotation request based on search parameters
     2. Add quotation to that request
+    
+    Supports both legacy format and new exact format from request body
     """
     permission_classes = [IsCustomer]
 
     def post(self, request):
         """Create quotation using the new flow"""
-        serializer = QuotationCreateSerializer(
-            data=request.data, 
-            context={'request': request}
-        )
+        
+        # Determine which serializer to use based on request format
+        if 'vendor_id' in request.data and 'origin_pincode' in request.data:
+            # New format - exact match to provided request
+            serializer = QuotationCreateV2Serializer(
+                data=request.data, 
+                context={'request': request}
+            )
+        else:
+            # Legacy format with searchParams structure
+            serializer = QuotationCreateSerializer(
+                data=request.data, 
+                context={'request': request}
+            )
         
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
@@ -80,12 +92,19 @@ class QuotationCreateView(APIView, StandardizedResponseMixin):
             quotation_request = result['quotation_request']
             quotation = result['quotation']
             created_new_request = result['created_new_request']
+            quotation_updated = result.get('quotation_updated', False)
             
             # Prepare response message
             if created_new_request:
-                message = f"New quotation request created and quotation added for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+                if quotation_updated:
+                    message = f"New quotation request created and existing quotation updated for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+                else:
+                    message = f"New quotation request created and quotation added for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
             else:
-                message = f"Quotation added to existing request for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+                if quotation_updated:
+                    message = f"Existing quotation updated for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+                else:
+                    message = f"Quotation added to existing request for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
             
             # Prepare response data
             response_data = {
@@ -109,9 +128,12 @@ class QuotationCreateView(APIView, StandardizedResponseMixin):
                     'items': quotation.items,
                     'total_amount': str(quotation.total_amount),
                     'status': quotation.status,
+                    'validity_hours': quotation.validity_hours,
                     'created_at': quotation.created_at.isoformat(),
+                    'updated_at': quotation.updated_at.isoformat(),
                 },
                 'created_new_request': created_new_request,
+                'quotation_updated': quotation_updated,
                 'message': message
             }
             
@@ -128,7 +150,7 @@ class QuotationCreateView(APIView, StandardizedResponseMixin):
             )
 
 
-class QuotationListView(generics.ListAPIView):
+class QuotationListView(StandardizedResponseMixin, generics.ListAPIView):
     """List quotations for a specific quotation request"""
     serializer_class = QuotationSerializer
     permission_classes = [IsCustomerOrVendor]
@@ -151,7 +173,7 @@ class QuotationListView(generics.ListAPIView):
         return quotations.order_by('-created_at')
 
 
-class QuotationDetailView(generics.RetrieveAPIView):
+class QuotationDetailView(StandardizedResponseMixin, generics.RetrieveAPIView):
     """Get details of a specific quotation"""
     serializer_class = QuotationSerializer
     permission_classes = [IsCustomerOrVendor]
@@ -167,7 +189,7 @@ class QuotationDetailView(generics.RetrieveAPIView):
             return Quotation.objects.filter(vendor=user, is_active=True)
 
 
-class VendorQuotationsView(generics.ListAPIView):
+class VendorQuotationsView(StandardizedResponseMixin, generics.ListAPIView):
     """List all quotations created by vendor"""
     serializer_class = QuotationSerializer
     permission_classes = [IsVendor]
@@ -179,7 +201,7 @@ class VendorQuotationsView(generics.ListAPIView):
         ).order_by('-created_at')
 
 
-class CustomerQuotationsView(generics.ListAPIView):
+class CustomerQuotationsView(StandardizedResponseMixin, generics.ListAPIView):
     """List all quotations received by customer"""
     serializer_class = QuotationSerializer
     permission_classes = [IsCustomer]

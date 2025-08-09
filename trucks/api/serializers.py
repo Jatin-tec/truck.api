@@ -17,6 +17,7 @@ class TruckImageSerializer(serializers.ModelSerializer):
 class TruckListSerializer(serializers.ModelSerializer):
     """Serializer for listing trucks (basic info)"""
     truck_type = serializers.CharField(source='truck_type.name', read_only=True)
+    vendor_id = serializers.IntegerField(source='vendor.id', read_only=True)
     vendor_name = serializers.CharField(source='vendor.name', read_only=True)
     vendor_phone = serializers.CharField(source='vendor.phone_number', read_only=True)
     primary_image = serializers.SerializerMethodField()
@@ -25,7 +26,7 @@ class TruckListSerializer(serializers.ModelSerializer):
         model = Truck
         fields = [
             'id', 'registration_number', 'truck_type', 'capacity', 'make', 'model', 
-            'year', 'availability_status', 'base_price_per_km', 'current_location_address',
+            'year', 'availability_status', 'base_price_per_km', 'current_location_address', 'vendor_id',
             'vendor_name', 'vendor_phone', 'primary_image'
         ]
 

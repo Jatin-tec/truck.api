@@ -1,6 +1,5 @@
 from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
 from django_ratelimit.decorators import ratelimit
@@ -13,30 +12,12 @@ from trucks.api.serializers import (
 )
 from quotations.models import Route, RouteStop, RoutePricing
 from project.utils import success_response, error_response, validation_error_response, StandardizedResponseMixin
+from project.permissions import IsVendor, IsVendorOrReadOnly
 from project.location_utils import (
     get_coordinates_from_pincode, calculate_distance, 
     find_nearest_location, get_city_from_pincode
 )
 import math
-
-class IsVendorOrReadOnly(permissions.BasePermission):
-    """
-    Custom permission to only allow vendors to create/edit trucks and drivers.
-    """
-    def has_permission(self, request, view):
-        if request.method in permissions.READONLY_METHODS:
-            return True
-        return request.user.is_authenticated and request.user.role == 'vendor'
-
-    def has_object_permission(self, request, view, obj):
-        if request.method in permissions.READONLY_METHODS:
-            return True
-        return obj.vendor == request.user
-
-class IsVendor(permissions.BasePermission):
-    """Permission for vendor-only endpoints"""
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'vendor'
 
 # Truck Types
 class TruckTypeListView(StandardizedResponseMixin, generics.ListAPIView):
