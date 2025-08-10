@@ -12,8 +12,9 @@ from quotations.models import (
 )
 from quotations.api.serializers import (
     QuotationRequestSerializer, QuotationSerializer,
-    QuotationCreateSerializer, QuotationCreateV2Serializer, 
-    QuotationRequestDetailSerializer
+    QuotationCreateSerializer, 
+    QuotationRequestDetailSerializer, NegotiationCreateSerializer,
+    QuotationNegotiationSerializer
 )
 
 
@@ -57,56 +58,42 @@ class VendorQuotationRequestsView(StandardizedResponseMixin, generics.ListAPIVie
 
 class QuotationCreateView(APIView, StandardizedResponseMixin):
     """
-    Create quotation with the new flow:
-    1. Create/find quotation request based on search parameters
-    2. Add quotation to that request
-    
-    Supports both legacy format and new exact format from request body
+    Customer creates quotation request for specific vendor with selected vehicle items
+    This matches the TypeScript interface where customers select vendor and vehicles
     """
     permission_classes = [IsCustomer]
 
     def post(self, request):
-        """Create quotation using the new flow"""
+        """Create quotation request with vendor and vehicle selection"""
         
-        # Determine which serializer to use based on request format
-        if 'vendor_id' in request.data and 'origin_pincode' in request.data:
-            # New format - exact match to provided request
-            serializer = QuotationCreateV2Serializer(
-                data=request.data, 
-                context={'request': request}
-            )
-        else:
-            # Legacy format with searchParams structure
-            serializer = QuotationCreateSerializer(
-                data=request.data, 
-                context={'request': request}
-            )
+        # Use the QuotationCreateSerializer which handles the actual frontend structure
+        serializer = QuotationCreateSerializer(
+            data=request.data, 
+            context={'request': request}
+        )
         
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
         
         try:
-            # Create quotation and quotation request
+            # Create quotation request and quotation with vendor selection
             result = serializer.save()
             
             quotation_request = result['quotation_request']
             quotation = result['quotation']
             created_new_request = result['created_new_request']
-            quotation_updated = result.get('quotation_updated', False)
+            customer_negotiation = result.get('customer_negotiation')
+            
+            # Extract search params from the original request
+            search_params = request.data.get('searchParams', {})
             
             # Prepare response message
             if created_new_request:
-                if quotation_updated:
-                    message = f"New quotation request created and existing quotation updated for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
-                else:
-                    message = f"New quotation request created and quotation added for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+                message = f"Quotation request created for vendor {quotation.vendor_name} with selected vehicles"
             else:
-                if quotation_updated:
-                    message = f"Existing quotation updated for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
-                else:
-                    message = f"Quotation added to existing request for route {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+                message = f"Updated quotation request for vendor {quotation.vendor_name}"
             
-            # Prepare response data
+            # Prepare response data matching your TypeScript interface expectation
             response_data = {
                 'quotation_request': {
                     'id': quotation_request.id,
@@ -132,10 +119,29 @@ class QuotationCreateView(APIView, StandardizedResponseMixin):
                     'created_at': quotation.created_at.isoformat(),
                     'updated_at': quotation.updated_at.isoformat(),
                 },
+                'search_params': {
+                    'origin_pincode': search_params.get('originPinCode', quotation_request.origin_pincode),
+                    'destination_pincode': search_params.get('destinationPinCode', quotation_request.destination_pincode),
+                    'pickup_date': search_params.get('pickupDate', quotation_request.pickup_date.isoformat()),
+                    'drop_date': search_params.get('dropDate', quotation_request.drop_date.isoformat()),
+                    'weight': search_params.get('weight', str(quotation_request.weight)),
+                    'weight_unit': search_params.get('weightUnit', quotation_request.weight_unit),
+                    'vehicle_type': search_params.get('vehicleType', quotation_request.vehicle_type),
+                    'urgency_level': search_params.get('urgencyLevel', quotation_request.urgency_level),
+                },
                 'created_new_request': created_new_request,
-                'quotation_updated': quotation_updated,
                 'message': message
             }
+            
+            # Add customer negotiation data
+            if customer_negotiation:
+                response_data['customer_negotiation'] = {
+                    'id': customer_negotiation.id,
+                    'initiated_by': customer_negotiation.initiated_by,
+                    'proposed_amount': str(customer_negotiation.proposed_amount),
+                    'message': customer_negotiation.message,
+                    'created_at': customer_negotiation.created_at.isoformat(),
+                }
             
             return success_response(
                 data=response_data,
@@ -145,9 +151,86 @@ class QuotationCreateView(APIView, StandardizedResponseMixin):
             
         except Exception as e:
             return error_response(
-                error=f"Failed to create quotation: {str(e)}",
+                error=f"Failed to create quotation request: {str(e)}",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+# class VendorQuotationResponseView(APIView, StandardizedResponseMixin):
+#     """
+#     Vendor responds to customer's quotation request with their quote
+#     This creates a vendor quotation response to an existing customer request
+#     """
+#     permission_classes = [IsVendor]
+
+#     def post(self, request):
+#         """Vendor creates a quotation response to customer's request"""
+        
+#         # Use QuotationCreateV2Serializer but modify it for vendor responses
+#         serializer = QuotationCreateV2Serializer(
+#             data=request.data, 
+#             context={'request': request}
+#         )
+        
+#         if not serializer.is_valid():
+#             return validation_error_response(serializer.errors)
+        
+#         try:
+#             # Create vendor's quotation response
+#             result = serializer.save()
+            
+#             quotation_request = result['quotation_request']
+#             quotation = result['quotation']
+#             created_new_request = result['created_new_request']
+#             quotation_updated = result.get('quotation_updated', False)
+            
+#             # Prepare response message
+#             if quotation_updated:
+#                 message = f"Updated your quotation for customer request {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+#             else:
+#                 message = f"Quotation submitted for customer request {quotation_request.origin_pincode} to {quotation_request.destination_pincode}"
+            
+#             # Prepare response data
+#             response_data = {
+#                 'quotation_request': {
+#                     'id': quotation_request.id,
+#                     'customer_name': quotation_request.customer.name,
+#                     'origin_pincode': quotation_request.origin_pincode,
+#                     'destination_pincode': quotation_request.destination_pincode,
+#                     'pickup_date': quotation_request.pickup_date.isoformat(),
+#                     'drop_date': quotation_request.drop_date.isoformat(),
+#                     'weight': str(quotation_request.weight),
+#                     'weight_unit': quotation_request.weight_unit,
+#                     'vehicle_type': quotation_request.vehicle_type,
+#                     'urgency_level': quotation_request.urgency_level,
+#                     'total_quotations': quotation_request.get_total_quotations(),
+#                     'created_at': quotation_request.created_at.isoformat(),
+#                 },
+#                 'quotation': {
+#                     'id': quotation.id,
+#                     'vendor_name': quotation.vendor_name,
+#                     'items': quotation.items,
+#                     'total_amount': str(quotation.total_amount),
+#                     'status': quotation.status,
+#                     'validity_hours': quotation.validity_hours,
+#                     'created_at': quotation.created_at.isoformat(),
+#                     'updated_at': quotation.updated_at.isoformat(),
+#                 },
+#                 'quotation_updated': quotation_updated,
+#                 'message': message
+#             }
+            
+#             return success_response(
+#                 data=response_data,
+#                 message=message,
+#                 status_code=status.HTTP_201_CREATED
+#             )
+            
+#         except Exception as e:
+#             return error_response(
+#                 error=f"Failed to create vendor quotation: {str(e)}",
+#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+#             )
 
 
 class QuotationListView(StandardizedResponseMixin, generics.ListAPIView):
@@ -214,7 +297,7 @@ class CustomerQuotationsView(StandardizedResponseMixin, generics.ListAPIView):
 
 
 # Quotation Status Management
-class QuotationAcceptView(APIView):
+class QuotationAcceptView(APIView, StandardizedResponseMixin):
     """Customer accepts a quotation"""
     permission_classes = [IsCustomer]
     
@@ -227,28 +310,50 @@ class QuotationAcceptView(APIView):
                 is_active=True
             )
             
+            # Update quotation status to accepted
             quotation.status = 'accepted'
             quotation.save()
             
             # Mark other quotations for the same request as rejected
-            Quotation.objects.filter(
+            other_quotations = Quotation.objects.filter(
                 quotation_request=quotation.quotation_request,
                 is_active=True
-            ).exclude(id=quotation.id).update(status='rejected')
+            ).exclude(id=quotation.id)
             
-            return Response({
-                'message': 'Quotation accepted successfully',
-                'quotation_id': quotation.id
-            })
+            rejected_count = other_quotations.update(status='rejected')
+            
+            # Get final negotiated amount (latest negotiation if any)
+            latest_negotiation = quotation.negotiations.order_by('-created_at').first()
+            final_amount = latest_negotiation.proposed_amount if latest_negotiation else quotation.total_amount
+            
+            response_data = {
+                'quotation': {
+                    'id': quotation.id,
+                    'vendor_name': quotation.vendor_name,
+                    'original_amount': str(quotation.total_amount),
+                    'final_amount': str(final_amount),
+                    'status': quotation.status,
+                    'negotiations_count': quotation.negotiations.count(),
+                },
+                'quotation_request_id': quotation.quotation_request.id,
+                'other_quotations_rejected': rejected_count,
+                'has_negotiations': quotation.negotiations.exists()
+            }
+            
+            return success_response(
+                data=response_data,
+                message=f'Quotation accepted successfully. Final amount: ₹{final_amount}',
+                status_code=status.HTTP_200_OK
+            )
             
         except Quotation.DoesNotExist:
-            return Response(
-                {'error': 'Quotation not found or cannot be accepted'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                error='Quotation not found or cannot be accepted',
+                status_code=status.HTTP_404_NOT_FOUND
             )
 
 
-class QuotationRejectView(APIView):
+class QuotationRejectView(APIView, StandardizedResponseMixin):
     """Customer rejects a quotation"""
     permission_classes = [IsCustomer]
     
@@ -261,55 +366,254 @@ class QuotationRejectView(APIView):
                 is_active=True
             )
             
+            # Update quotation status to rejected
             quotation.status = 'rejected'
             quotation.save()
             
-            return Response({'message': 'Quotation rejected successfully'})
+            # Get some context about the rejection
+            negotiations_count = quotation.negotiations.count()
+            latest_negotiation = quotation.negotiations.order_by('-created_at').first()
+            
+            response_data = {
+                'quotation': {
+                    'id': quotation.id,
+                    'vendor_name': quotation.vendor_name,
+                    'original_amount': str(quotation.total_amount),
+                    'status': quotation.status,
+                    'negotiations_count': negotiations_count,
+                },
+                'quotation_request_id': quotation.quotation_request.id,
+                'had_negotiations': negotiations_count > 0,
+                'latest_negotiated_amount': str(latest_negotiation.proposed_amount) if latest_negotiation else None
+            }
+            
+            return success_response(
+                data=response_data,
+                message='Quotation rejected successfully',
+                status_code=status.HTTP_200_OK
+            )
             
         except Quotation.DoesNotExist:
-            return Response(
-                {'error': 'Quotation not found or cannot be rejected'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                error='Quotation not found or cannot be rejected',
+                status_code=status.HTTP_404_NOT_FOUND
             )
 
 
 # Negotiation Views
-# class NegotiationCreateView(generics.CreateAPIView):
-#     """Create a negotiation for a quotation"""
-#     serializer_class = NegotiationCreateSerializer
-#     permission_classes = [IsCustomerOrVendor]
+class NegotiationCreateView(APIView, StandardizedResponseMixin):
+    """Create a new negotiation offer"""
+    permission_classes = [IsCustomerOrVendor]
+
+    def post(self, request, quotation_id):
+        """Create a negotiation offer for a quotation"""
+        try:
+            # Get the quotation
+            quotation = Quotation.objects.get(
+                id=quotation_id,
+                is_active=True
+            )
+            
+            # Check permissions
+            user = request.user
+            if user.role == 'customer':
+                # Customer can negotiate only their own quotation requests
+                if quotation.quotation_request.customer != user:
+                    return error_response(
+                        error="You can only negotiate quotations for your own requests",
+                        status_code=status.HTTP_403_FORBIDDEN
+                    )
+                initiated_by = 'customer'
+            elif user.role == 'vendor':
+                # Vendor can negotiate only their own quotations
+                if quotation.vendor != user:
+                    return error_response(
+                        error="You can only negotiate your own quotations",
+                        status_code=status.HTTP_403_FORBIDDEN
+                    )
+                initiated_by = 'vendor'
+            else:
+                return error_response(
+                    error="Only customers and vendors can create negotiations",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
+
+            # Validate request data
+            serializer = NegotiationCreateSerializer(data=request.data)
+            if not serializer.is_valid():
+                return validation_error_response(serializer.errors)
+
+            # Prevent negotiating already accepted/rejected quotations
+            if quotation.status in ['accepted', 'rejected', 'expired']:
+                return error_response(
+                    error=f"Cannot negotiate quotation with status '{quotation.status}'",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Create negotiation
+            negotiation = QuotationNegotiation.objects.create(
+                quotation=quotation,
+                initiated_by=initiated_by,
+                proposed_amount=serializer.validated_data['proposed_amount'],
+                message=serializer.validated_data.get('message', ''),
+                proposed_base_price=serializer.validated_data.get('proposed_base_price'),
+                proposed_fuel_charges=serializer.validated_data.get('proposed_fuel_charges'),
+                proposed_toll_charges=serializer.validated_data.get('proposed_toll_charges'),
+                proposed_loading_charges=serializer.validated_data.get('proposed_loading_charges'),
+                proposed_unloading_charges=serializer.validated_data.get('proposed_unloading_charges'),
+                proposed_additional_charges=serializer.validated_data.get('proposed_additional_charges'),
+            )
+
+            # Update quotation status to negotiating
+            quotation.status = 'negotiating'
+            quotation.save()
+
+            # Prepare response data
+            response_data = {
+                'negotiation': {
+                    'id': negotiation.id,
+                    'quotation_id': quotation.id,
+                    'initiated_by': negotiation.initiated_by,
+                    'proposed_amount': str(negotiation.proposed_amount),
+                    'message': negotiation.message,
+                    'proposed_base_price': str(negotiation.proposed_base_price) if negotiation.proposed_base_price else None,
+                    'proposed_fuel_charges': str(negotiation.proposed_fuel_charges) if negotiation.proposed_fuel_charges else None,
+                    'proposed_toll_charges': str(negotiation.proposed_toll_charges) if negotiation.proposed_toll_charges else None,
+                    'proposed_loading_charges': str(negotiation.proposed_loading_charges) if negotiation.proposed_loading_charges else None,
+                    'proposed_unloading_charges': str(negotiation.proposed_unloading_charges) if negotiation.proposed_unloading_charges else None,
+                    'proposed_additional_charges': str(negotiation.proposed_additional_charges) if negotiation.proposed_additional_charges else None,
+                    'created_at': negotiation.created_at.isoformat(),
+                },
+                'quotation_status': quotation.status
+            }
+
+            return success_response(
+                data=response_data,
+                message=f"Negotiation offer created successfully by {initiated_by}",
+                status_code=status.HTTP_201_CREATED
+            )
+
+        except Quotation.DoesNotExist:
+            return error_response(
+                error="Quotation not found",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return error_response(
+                error=f"Failed to create negotiation: {str(e)}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
-# class NegotiationListView(generics.ListAPIView):
-#     """List negotiations for a specific quotation"""
-#     serializer_class = QuotationNegotiationSerializer
-#     permission_classes = [IsCustomerOrVendor]
+class NegotiationListView(StandardizedResponseMixin, generics.ListAPIView):
+    """List negotiations for a specific quotation"""
+    serializer_class = QuotationNegotiationSerializer
+    permission_classes = [IsCustomerOrVendor]
     
-#     def get_queryset(self):
-#         quotation_id = self.kwargs['quotation_id']
-#         user = self.request.user
+    def get_queryset(self):
+        quotation_id = self.kwargs['quotation_id']
+        user = self.request.user
         
-#         # Ensure user has access to this quotation
-#         try:
-#             if user.role == 'customer':
-#                 quotation = Quotation.objects.get(
-#                     id=quotation_id,
-#                     quotation_request__customer=user
-#                 )
-#             else:  # vendor
-#                 quotation = Quotation.objects.get(
-#                     id=quotation_id,
-#                     vendor=user
-#                 )
-#         except Quotation.DoesNotExist:
-#             return QuotationNegotiation.objects.none()
+        # Ensure user has access to this quotation
+        try:
+            if user.role == 'customer':
+                quotation = Quotation.objects.get(
+                    id=quotation_id,
+                    quotation_request__customer=user
+                )
+            else:  # vendor
+                quotation = Quotation.objects.get(
+                    id=quotation_id,
+                    vendor=user
+                )
+        except Quotation.DoesNotExist:
+            return QuotationNegotiation.objects.none()
         
-#         return QuotationNegotiation.objects.filter(
-#             quotation_id=quotation_id
-#         ).order_by('created_at')
+        return QuotationNegotiation.objects.filter(
+            quotation_id=quotation_id
+        ).order_by('created_at')
+
+    def list(self, request, *args, **kwargs):
+        """Override to add quotation info in response"""
+        queryset = self.get_queryset()
+        quotation_id = self.kwargs['quotation_id']
+        
+        if not queryset.exists():
+            # Still try to get quotation info even if no negotiations
+            try:
+                user = self.request.user
+                if user.role == 'customer':
+                    quotation = Quotation.objects.get(
+                        id=quotation_id,
+                        quotation_request__customer=user
+                    )
+                else:  # vendor
+                    quotation = Quotation.objects.get(
+                        id=quotation_id,
+                        vendor=user
+                    )
+                
+                response_data = {
+                    'quotation': {
+                        'id': quotation.id,
+                        'total_amount': str(quotation.total_amount),
+                        'status': quotation.status,
+                        'vendor_name': quotation.vendor_name,
+                    },
+                    'negotiations': [],
+                    'total_negotiations': 0,
+                    'can_negotiate': quotation.status in ['sent', 'negotiating']
+                }
+                
+                return success_response(
+                    data=response_data,
+                    message="No negotiations found for this quotation",
+                    status_code=status.HTTP_200_OK
+                )
+                
+            except Quotation.DoesNotExist:
+                return error_response(
+                    error="Quotation not found or not accessible",
+                    status_code=status.HTTP_404_NOT_FOUND
+                )
+        
+        # Get quotation info
+        quotation = queryset.first().quotation
+        
+        # Serialize negotiations
+        serializer = self.get_serializer(queryset, many=True)
+        
+        # Get latest negotiation to show current state
+        latest_negotiation = queryset.order_by('-created_at').first()
+        
+        response_data = {
+            'quotation': {
+                'id': quotation.id,
+                'original_amount': str(quotation.total_amount),
+                'current_negotiated_amount': str(latest_negotiation.proposed_amount) if latest_negotiation else str(quotation.total_amount),
+                'status': quotation.status,
+                'vendor_name': quotation.vendor_name,
+                'can_negotiate': quotation.status in ['sent', 'negotiating']
+            },
+            'negotiations': serializer.data,
+            'total_negotiations': queryset.count(),
+            'latest_negotiation': {
+                'initiated_by': latest_negotiation.initiated_by,
+                'proposed_amount': str(latest_negotiation.proposed_amount),
+                'message': latest_negotiation.message,
+                'created_at': latest_negotiation.created_at.isoformat()
+            } if latest_negotiation else None,
+            'next_negotiator': 'vendor' if latest_negotiation and latest_negotiation.initiated_by == 'customer' else 'customer' if latest_negotiation else None
+        }
+        
+        return success_response(
+            data=response_data,
+            message=f"Found {queryset.count()} negotiations for quotation",
+            status_code=status.HTTP_200_OK
+        )
 
 
-class AcceptNegotiationView(APIView):
+class AcceptNegotiationView(APIView, StandardizedResponseMixin):
     """Accept a negotiation and update quotation"""
     permission_classes = [IsCustomerOrVendor]
     
@@ -321,35 +625,89 @@ class AcceptNegotiationView(APIView):
             
             # Check if user is authorized to accept this negotiation
             if user.role == 'customer' and user != quotation.quotation_request.customer:
-                raise permissions.PermissionDenied()
+                return error_response(
+                    error="You can only accept negotiations for your own quotation requests",
+                    status_code=status.HTTP_403_FORBIDDEN
+                )
             elif user.role == 'vendor' and user != quotation.vendor:
-                raise permissions.PermissionDenied()
-            
-            # Check if the negotiation was initiated by the other party
-            if ((user.role == 'customer' and negotiation.initiated_by == 'customer') or
-                (user.role == 'vendor' and negotiation.initiated_by == 'vendor')):
-                return Response(
-                    {'error': 'You cannot accept your own negotiation'},
-                    status=status.HTTP_400_BAD_REQUEST
+                return error_response(
+                    error="You can only accept negotiations for your own quotations",
+                    status_code=status.HTTP_403_FORBIDDEN
                 )
             
-            # Update quotation with negotiated values
-            quotation.total_base_price = negotiation.proposed_base_price or quotation.total_base_price
-            quotation.total_fuel_charges = negotiation.proposed_fuel_charges or quotation.total_fuel_charges
-            quotation.total_toll_charges = negotiation.proposed_toll_charges or quotation.total_toll_charges
-            quotation.total_loading_charges = negotiation.proposed_loading_charges or quotation.total_loading_charges
-            quotation.total_unloading_charges = negotiation.proposed_unloading_charges or quotation.total_unloading_charges
-            quotation.total_additional_charges = negotiation.proposed_additional_charges or quotation.total_additional_charges
-            quotation.status = 'sent'  # Back to sent status after accepting negotiation
-            quotation.save()  # This will recalculate total_amount
+            # Check if the negotiation was initiated by the other party (prevent self-acceptance)
+            if ((user.role == 'customer' and negotiation.initiated_by == 'customer') or
+                (user.role == 'vendor' and negotiation.initiated_by == 'vendor')):
+                return error_response(
+                    error='You cannot accept your own negotiation offer',
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
             
-            return Response({
-                'message': 'Negotiation accepted and quotation updated',
-                'new_total_amount': quotation.total_amount
-            })
+            # Prevent accepting negotiations for non-negotiating quotations
+            if quotation.status not in ['sent', 'negotiating']:
+                return error_response(
+                    error=f'Cannot accept negotiation for quotation with status "{quotation.status}"',
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Store original amount for comparison
+            original_amount = quotation.total_amount
+            
+            # Update quotation with negotiated values
+            quotation.total_amount = negotiation.proposed_amount
+            quotation.status = 'accepted'
+            quotation.save()
+            
+            # Mark other quotations for the same request as rejected
+            other_quotations = Quotation.objects.filter(
+                quotation_request=quotation.quotation_request,
+                is_active=True
+            ).exclude(id=quotation.id)
+            
+            rejected_count = other_quotations.update(status='rejected')
+            
+            # Prepare comprehensive response data
+            response_data = {
+                'negotiation_accepted': {
+                    'id': negotiation.id,
+                    'initiated_by': negotiation.initiated_by,
+                    'accepted_by': user.role,
+                    'original_amount': str(original_amount),
+                    'final_amount': str(negotiation.proposed_amount),
+                    'savings': str(original_amount - negotiation.proposed_amount),
+                    'message': negotiation.message
+                },
+                'quotation': {
+                    'id': quotation.id,
+                    'vendor_name': quotation.vendor_name,
+                    'status': quotation.status,
+                    'total_negotiations': quotation.negotiations.count()
+                },
+                'quotation_request_id': quotation.quotation_request.id,
+                'other_quotations_rejected': rejected_count
+            }
+            
+            acceptance_message = f"Negotiation accepted! Final amount: ₹{negotiation.proposed_amount}"
+            if original_amount != negotiation.proposed_amount:
+                savings = original_amount - negotiation.proposed_amount
+                if savings > 0:
+                    acceptance_message += f" (Saved ₹{savings})"
+                else:
+                    acceptance_message += f" (Additional ₹{abs(savings)})"
+            
+            return success_response(
+                data=response_data,
+                message=acceptance_message,
+                status_code=status.HTTP_200_OK
+            )
             
         except QuotationNegotiation.DoesNotExist:
-            return Response(
-                {'error': 'Negotiation not found'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                error='Negotiation not found',
+                status_code=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return error_response(
+                error=f'Failed to accept negotiation: {str(e)}',
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

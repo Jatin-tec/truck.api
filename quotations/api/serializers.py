@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from quotations.models import QuotationRequest, Quotation
+from quotations.models import QuotationRequest, Quotation, QuotationNegotiation
 from django.contrib.auth import get_user_model
 from django.db import models
 from decimal import Decimal
@@ -90,13 +90,154 @@ class SearchParamsSerializer(serializers.Serializer):
     urgencyLevel = serializers.CharField()
 
 
+class ActualVehicleItemSerializer(serializers.Serializer):
+    """Serializer for the actual vehicle item structure from frontend"""
+    vehicle_id = serializers.IntegerField()
+    vehicle_model = serializers.CharField()
+    vehicle_type = serializers.CharField()
+    max_weight = serializers.CharField()
+    gps_number = serializers.CharField()
+    unit_price = serializers.CharField()
+    quantity = serializers.IntegerField()
+    estimated_delivery = serializers.CharField()
+
+
 class QuotationCreateSerializer(serializers.Serializer):
-    """Serializer for creating quotations"""
+    """Serializer for creating quotations - handles the actual frontend structure"""
+    vendor_id = serializers.IntegerField()
+    vendor_name = serializers.CharField()
+    total_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    origin_pincode = serializers.CharField(max_length=10)
+    destination_pincode = serializers.CharField(max_length=10)
+    pickup_date = serializers.DateTimeField()
+    drop_date = serializers.DateTimeField()
+    weight = serializers.CharField()  # Can be "3" or "3.5"
+    weight_unit = serializers.CharField()
+    urgency_level = serializers.CharField(default='standard')
+    items = ActualVehicleItemSerializer(many=True)
+    
+    # Optional fields
+    vehicle_type = serializers.CharField(required=False, allow_blank=True)
+    customer_proposed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    customer_negotiation_message = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_vendor_id(self, value):
+        """Validate vendor exists and has vendor role"""
+        try:
+            vendor = User.objects.get(id=value, role='vendor')
+            return vendor
+        except User.DoesNotExist:
+            raise serializers.ValidationError("Vendor not found or invalid role")
+
+    def validate(self, data):
+        """Additional validation for the data"""
+        pickup_date = data.get('pickup_date')
+        drop_date = data.get('drop_date')
+        
+        if pickup_date and drop_date:
+            if pickup_date.date() >= drop_date.date():
+                raise serializers.ValidationError("Drop date must be after pickup date")
+        
+        # Validate items
+        items = data.get('items', [])
+        if not items:
+            raise serializers.ValidationError("At least one vehicle item is required")
+            
+        return data
+
+    def create(self, validated_data):
+        """Create or get quotation request and add quotation"""
+        vendor = validated_data['vendor_id']
+        
+        # Extract search parameters for QuotationRequest
+        quotation_request_data = {
+            'customer': self.context['request'].user,
+            'origin_pincode': validated_data['origin_pincode'],
+            'destination_pincode': validated_data['destination_pincode'],
+            'pickup_date': validated_data['pickup_date'].date(),
+            'drop_date': validated_data['drop_date'].date(),
+            'weight': Decimal(validated_data['weight']),
+            'weight_unit': validated_data['weight_unit'],
+            'vehicle_type': validated_data.get('vehicle_type', 'Mixed'),
+            'urgency_level': validated_data['urgency_level'],
+        }
+        
+        # Get or create quotation request
+        quotation_request, created = QuotationRequest.objects.get_or_create(
+            **quotation_request_data,
+            defaults={'is_active': True}
+        )
+        
+        # Transform items to the expected format for storage
+        transformed_items = []
+        for item in validated_data['items']:
+            transformed_item = {
+                'vehicle': {
+                    'id': str(item['vehicle_id']),
+                    'model': item['vehicle_model'],
+                    'vehicleType': item['vehicle_type'],
+                    'maxWeight': item['max_weight'],
+                    'gpsNumber': item['gps_number'],
+                    'total': item['unit_price'],
+                    'estimatedDelivery': item['estimated_delivery']
+                },
+                'quantity': item['quantity']
+            }
+            transformed_items.append(transformed_item)
+        
+        # Create quotation for this request
+        quotation = Quotation.objects.create(
+            quotation_request=quotation_request,
+            vendor=vendor,
+            vendor_name=validated_data['vendor_name'],
+            items=transformed_items,
+            total_amount=validated_data['total_amount'],
+            status='pending'  # Customer request pending vendor confirmation
+        )
+        
+        # ALWAYS create initial customer negotiation to track the quotation request
+        customer_proposed_amount = validated_data.get('customer_proposed_amount')
+        
+        if customer_proposed_amount:
+            # Customer has provided a different proposed amount
+            negotiation_amount = customer_proposed_amount
+            negotiation_message = validated_data.get('customer_negotiation_message', 'Customer price proposal')
+            quotation.status = 'negotiating'  # Mark as negotiating since customer proposed different amount
+        else:
+            # Customer is requesting the vendor's price, create initial negotiation with vendor's amount
+            negotiation_amount = validated_data['total_amount']
+            negotiation_message = f'Initial quotation request for {validated_data["vendor_name"]} vehicles'
+        
+        # Create the initial customer negotiation instance
+        customer_negotiation = QuotationNegotiation.objects.create(
+            quotation=quotation,
+            initiated_by='customer',
+            proposed_amount=negotiation_amount,
+            message=negotiation_message
+        )
+        
+        # Save quotation with updated status
+        quotation.save()
+        
+        return {
+            'quotation_request': quotation_request,
+            'quotation': quotation,
+            'created_new_request': created,
+            'customer_negotiation': customer_negotiation
+        }
+
+
+class QuotationCreateLegacySerializer(serializers.Serializer):
+    """Legacy serializer for creating quotations with nested searchParams"""
     vendorId = serializers.IntegerField()
     vendorName = serializers.CharField()
     items = QuotationItemSerializer(many=True)
     totalAmount = serializers.DecimalField(max_digits=10, decimal_places=2)
     searchParams = SearchParamsSerializer()
+    
+    # Optional initial negotiation from customer
+    customerProposedAmount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    customerNegotiationMessage = serializers.CharField(required=False, allow_blank=True)
 
     def validate_vendorId(self, value):
         """Validate vendor exists and has vendor role"""
@@ -156,13 +297,38 @@ class QuotationCreateSerializer(serializers.Serializer):
             vendor_name=validated_data['vendorName'],
             items=validated_data['items'],
             total_amount=validated_data['totalAmount'],
-            status='pending'
+            status='pending'  # Customer request pending vendor confirmation
         )
+        
+        # ALWAYS create initial customer negotiation to track the quotation request
+        customer_proposed_amount = validated_data.get('customerProposedAmount')
+        
+        if customer_proposed_amount:
+            # Customer has provided a different proposed amount
+            negotiation_amount = customer_proposed_amount
+            negotiation_message = validated_data.get('customerNegotiationMessage', 'Customer price proposal')
+            quotation.status = 'negotiating'  # Mark as negotiating since customer proposed different amount
+        else:
+            # Customer is requesting the vendor's price, create initial negotiation with vendor's amount
+            negotiation_amount = validated_data['totalAmount']
+            negotiation_message = f'Initial quotation request for {validated_data["vendorName"]} vehicles'
+        
+        # Create the initial customer negotiation instance
+        customer_negotiation = QuotationNegotiation.objects.create(
+            quotation=quotation,
+            initiated_by='customer',
+            proposed_amount=negotiation_amount,
+            message=negotiation_message
+        )
+        
+        # Save quotation with updated status
+        quotation.save()
         
         return {
             'quotation_request': quotation_request,
             'quotation': quotation,
-            'created_new_request': created
+            'created_new_request': created,
+            'customer_negotiation': customer_negotiation
         }
 
 
@@ -170,16 +336,23 @@ class QuotationSerializer(serializers.ModelSerializer):
     """Serializer for Quotation model"""
     vendor_name = serializers.CharField(read_only=True)
     quotation_request_id = serializers.IntegerField(source='quotation_request.id', read_only=True)
+    negotiations = serializers.SerializerMethodField()
     
     class Meta:
         model = Quotation
         fields = [
             'id', 'quotation_request_id', 'vendor', 'vendor_name', 'items',
-            'total_amount', 'terms_and_conditions', 'validity_hours',
+            'total_amount', 'terms_and_conditions', 'validity_hours', 'negotiations',
             'customer_suggested_price', 'vendor_response_to_suggestion',
             'status', 'is_active', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'vendor', 'vendor_name', 'quotation_request_id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'vendor', 'vendor_name', 'quotation_request_id', 'created_at', 'updated_at', 'negotiations']
+
+    def get_negotiations(self, obj):
+        """Get all negotiations for this quotation"""
+        negotiations = QuotationNegotiation.objects.filter(quotation=obj).order_by('created_at')
+        serializer = QuotationNegotiationSerializer(negotiations, many=True)
+        return serializer.data
 
 
 class QuotationResponseSerializer(serializers.Serializer):
@@ -190,182 +363,59 @@ class QuotationResponseSerializer(serializers.Serializer):
     message = serializers.CharField()
 
 
-class VehicleItemV2Serializer(serializers.Serializer):
-    """Serializer for vehicle item in the new format"""
-    vehicle_id = serializers.IntegerField()
-    vehicle_model = serializers.CharField()
-    vehicle_type = serializers.CharField()
-    max_weight = serializers.CharField()
-    gps_number = serializers.CharField()
-    unit_price = serializers.CharField()
-    quantity = serializers.IntegerField()
-    estimated_delivery = serializers.CharField()
+class NegotiationCreateSerializer(serializers.Serializer):
+    """Serializer for creating negotiation offers"""
+    proposed_amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    message = serializers.CharField(required=False, allow_blank=True)
+    
+    # Optional breakdown fields
+    proposed_base_price = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    proposed_fuel_charges = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    proposed_toll_charges = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    proposed_loading_charges = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    proposed_unloading_charges = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    proposed_additional_charges = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
 
-    def validate_vehicle_id(self, value):
-        """Validate vehicle exists in trucks"""
-        from trucks.models import Truck
-        try:
-            truck = Truck.objects.get(id=value, is_active=True)
-            return value
-        except Truck.DoesNotExist:
-            raise serializers.ValidationError(f"Truck with ID {value} not found or inactive")
-
-
-class QuotationCreateV2Serializer(serializers.Serializer):
-    """New serializer for exact request format provided by user"""
-    vendor_id = serializers.CharField()  # Can be string ID or username
-    vendor_name = serializers.CharField()
-    total_amount = serializers.DecimalField(max_digits=12, decimal_places=3)
-    origin_pincode = serializers.CharField(max_length=10)
-    destination_pincode = serializers.CharField(max_length=10)
-    pickup_date = serializers.DateTimeField()
-    drop_date = serializers.DateTimeField()
-    weight = serializers.CharField()  # Can be "3" or "3.5"
-    weight_unit = serializers.CharField()
-    urgency_level = serializers.CharField(default='medium')
-    items = VehicleItemV2Serializer(many=True)
-
-    def validate_vendor_id(self, value):
-        """Validate vendor exists - support both ID and string identifiers"""
-        try:
-            # Try to find by ID first
-            if value.isdigit():
-                vendor = User.objects.get(id=int(value), role='vendor', is_active=True)
-            else:
-                # Try to find by email or phone
-                vendor = User.objects.filter(
-                    role='vendor', 
-                    is_active=True
-                ).filter(
-                    models.Q(email=value) | models.Q(phone_number=value)
-                ).first()
-                
-                if not vendor:
-                    raise User.DoesNotExist()
-                    
-            return vendor
-        except User.DoesNotExist:
-            raise serializers.ValidationError(f"Vendor '{value}' not found or inactive")
-
-    def validate_weight(self, value):
-        """Convert weight string to decimal"""
-        try:
-            # Remove any non-numeric characters except decimal point
-            clean_value = ''.join(c for c in value if c.isdigit() or c == '.')
-            return Decimal(clean_value)
-        except:
-            raise serializers.ValidationError("Invalid weight format")
-
-    def validate_weight_unit(self, value):
-        """Normalize weight unit"""
-        unit_mapping = {
-            'tonnes': 'ton',
-            'tonne': 'ton',
-            'tons': 'ton',
-            'ton': 'ton',
-            'kg': 'kg',
-            'kgs': 'kg',
-            'kilogram': 'kg',
-            'kilograms': 'kg',
-            'lbs': 'lbs',
-            'pounds': 'lbs'
-        }
-        normalized = unit_mapping.get(value.lower(), value.lower())
-        if normalized not in ['kg', 'ton', 'lbs']:
-            raise serializers.ValidationError("Weight unit must be 'kg', 'ton', or 'lbs'")
-        return normalized
-
-    def validate_urgency_level(self, value):
-        """Normalize urgency level"""
-        urgency_mapping = {
-            'standard': 'medium',
-            'normal': 'medium',
-            'low': 'low',
-            'medium': 'medium',
-            'high': 'high',
-            'urgent': 'urgent',
-            'emergency': 'urgent'
-        }
-        normalized = urgency_mapping.get(value.lower(), 'medium')
-        return normalized
+    def validate_proposed_amount(self, value):
+        """Validate proposed amount is positive"""
+        if value <= 0:
+            raise serializers.ValidationError("Proposed amount must be positive")
+        return value
 
     def validate(self, data):
-        """Additional validation"""
-        pickup_date = data.get('pickup_date')
-        drop_date = data.get('drop_date')
+        """Validate breakdown fields sum to total if provided"""
+        breakdown_fields = [
+            'proposed_base_price',
+            'proposed_fuel_charges', 
+            'proposed_toll_charges',
+            'proposed_loading_charges',
+            'proposed_unloading_charges',
+            'proposed_additional_charges'
+        ]
         
-        if pickup_date and drop_date:
-            if pickup_date.date() >= drop_date.date():
-                raise serializers.ValidationError("Drop date must be after pickup date")
+        # Check if any breakdown fields are provided
+        breakdown_values = [data.get(field) for field in breakdown_fields if data.get(field) is not None]
         
-        items = data.get('items', [])
-        if not items:
-            raise serializers.ValidationError("At least one vehicle item is required")
-            
+        if breakdown_values:
+            # If breakdown is provided, ensure it sums to proposed_amount
+            total_breakdown = sum(breakdown_values)
+            if abs(total_breakdown - data['proposed_amount']) > 0.01:  # Allow small rounding differences
+                raise serializers.ValidationError(
+                    f"Breakdown sum ({total_breakdown}) does not match proposed amount ({data['proposed_amount']})"
+                )
+        
         return data
 
-    def create(self, validated_data):
-        """Create or get quotation request and add quotation"""
-        vendor = validated_data['vendor_id']
-        customer = self.context['request'].user
-        
-        # Prepare quotation request data
-        quotation_request_data = {
-            'customer': customer,
-            'origin_pincode': validated_data['origin_pincode'],
-            'destination_pincode': validated_data['destination_pincode'],
-            'pickup_date': validated_data['pickup_date'].date(),
-            'drop_date': validated_data['drop_date'].date(),
-            'weight': validated_data['weight'],
-            'weight_unit': validated_data['weight_unit'],
-            'urgency_level': validated_data['urgency_level'],
-        }
-        
-        # Try to determine vehicle type from items
-        vehicle_types = list(set(item['vehicle_type'] for item in validated_data['items']))
-        vehicle_type = vehicle_types[0] if vehicle_types else 'Truck'
-        quotation_request_data['vehicle_type'] = vehicle_type
-        
-        # Get or create quotation request based on unique constraints
-        quotation_request, created = QuotationRequest.objects.get_or_create(
-            customer=customer,
-            origin_pincode=validated_data['origin_pincode'],
-            destination_pincode=validated_data['destination_pincode'],
-            pickup_date=validated_data['pickup_date'].date(),
-            drop_date=validated_data['drop_date'].date(),
-            defaults=quotation_request_data
-        )
-        
-        # Check if vendor already has a quotation for this request
-        existing_quotation = Quotation.objects.filter(
-            quotation_request=quotation_request,
-            vendor=vendor
-        ).first()
-        
-        if existing_quotation:
-            # Update existing quotation
-            existing_quotation.vendor_name = validated_data['vendor_name']
-            existing_quotation.items = validated_data['items']
-            existing_quotation.total_amount = validated_data['total_amount']
-            existing_quotation.status = 'pending'
-            existing_quotation.save()
-            quotation = existing_quotation
-            quotation_updated = True
-        else:
-            # Create new quotation
-            quotation = Quotation.objects.create(
-                quotation_request=quotation_request,
-                vendor=vendor,
-                vendor_name=validated_data['vendor_name'],
-                items=validated_data['items'],
-                total_amount=validated_data['total_amount'],
-                status='pending'
-            )
-            quotation_updated = False
-        
-        return {
-            'quotation_request': quotation_request,
-            'quotation': quotation,
-            'created_new_request': created,
-            'quotation_updated': quotation_updated
-        }
+
+class QuotationNegotiationSerializer(serializers.ModelSerializer):
+    """Serializer for QuotationNegotiation model"""
+    
+    class Meta:
+        model = QuotationNegotiation
+        fields = [
+            'id', 'quotation', 'initiated_by', 'proposed_amount', 'message',
+            'proposed_base_price', 'proposed_fuel_charges', 'proposed_toll_charges',
+            'proposed_loading_charges', 'proposed_unloading_charges', 'proposed_additional_charges',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
