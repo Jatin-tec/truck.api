@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
 RUN apt update
-RUN apt install python3-pip python3-dev libpq-dev postgresql-contrib netcat-openbsd -y
+RUN apt install python3-pip python3-dev libpq-dev postgresql-contrib netcat-openbsd curl -y
 
 # install dependencies
 RUN pip install --upgrade pip

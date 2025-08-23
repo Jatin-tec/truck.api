@@ -13,3 +13,4 @@ django-ratelimit==4.1.0
 django-import-export==4.1.1
 django-redis==5.4.0
 requests==2.32.3
+gunicorn==21.2.0
