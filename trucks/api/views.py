@@ -8,7 +8,7 @@ from trucks.models import TruckType, Truck, Driver, TruckImage, TruckLocation
 from trucks.api.serializers import (
     TruckTypeSerializer, TruckListSerializer, TruckDetailSerializer,
     DriverSerializer, TruckSearchSerializer, TruckLocationSerializer,
-    TruckImageUploadSerializer
+    TruckImageUploadSerializer, VendorTruckDetailSerializer
 )
 from quotations.models import Route, RouteStop, RoutePricing
 from project.utils import success_response, error_response, validation_error_response, StandardizedResponseMixin
@@ -440,6 +440,32 @@ class VendorTrucksView(StandardizedResponseMixin, generics.ListAPIView):
     
     def get_queryset(self):
         return Truck.objects.filter(vendor=self.request.user, is_active=True)
+
+
+class VendorTruckDetailView(StandardizedResponseMixin, generics.RetrieveUpdateDestroyAPIView):
+    """
+    Comprehensive truck detail view for vendors with all related data
+    GET: Detailed truck info with routes, driver, documents, performance stats
+    PUT/PATCH: Update truck details
+    DELETE: Deactivate truck
+    """
+    serializer_class = VendorTruckDetailSerializer
+    permission_classes = [IsVendor]
+    
+    def get_queryset(self):
+        return Truck.objects.filter(vendor=self.request.user, is_active=True)
+    
+    def get_serializer_class(self):
+        if self.request.method in ['PUT', 'PATCH']:
+            # Use basic serializer for updates to avoid complex nested data
+            return TruckDetailSerializer
+        return VendorTruckDetailSerializer
+
+    def perform_destroy(self, instance):
+        # Soft delete - just deactivate the truck
+        instance.is_active = False
+        instance.availability_status = 'inactive'
+        instance.save()
 
 # Driver Views
 class DriverListCreateView(StandardizedResponseMixin, generics.ListCreateAPIView):

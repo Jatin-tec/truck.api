@@ -1,23 +1,23 @@
 from django.contrib import admin
 from quotations.models import (
-    QuotationRequest, Quotation, QuotationNegotiation, 
+    QuotationRequest, Quotation, QuotationNegotiation, QuotationItem, 
     # New route-based models
     Route, RouteStop, RoutePricing, CustomerEnquiry, 
-    PriceRange, VendorEnquiryRequest
+    PriceRange
 )
 
 @admin.register(QuotationRequest)
 class QuotationRequestAdmin(admin.ModelAdmin):
     list_display = ['id', 'customer', 'origin_pincode', 'destination_pincode', 'pickup_date', 'drop_date', 'created_at']
-    list_filter = ['pickup_date', 'drop_date', 'is_active', 'urgency_level', 'vehicle_type']
+    list_filter = ['pickup_date', 'drop_date', 'is_active', 'vehicle_type']
     search_fields = ['customer__name', 'origin_pincode', 'destination_pincode']
     readonly_fields = ['created_at', 'updated_at']
 
 @admin.register(Quotation)
 class QuotationAdmin(admin.ModelAdmin):
-    list_display = ['id', 'vendor_name', 'total_amount', 'status', 'created_at']
-    list_filter = ['status', 'created_at']
-    search_fields = ['vendor_name', 'quotation_request__customer__name']
+    list_display = ['id', 'total_amount', 'urgency_level', 'status', 'created_at']
+    list_filter = ['status', 'urgency_level', 'created_at']
+    search_fields = ['quotation_request__customer__name']
     readonly_fields = ['created_at', 'updated_at']
 
 @admin.register(QuotationNegotiation)
@@ -26,7 +26,24 @@ class QuotationNegotiationAdmin(admin.ModelAdmin):
     list_filter = ['initiated_by', 'created_at']
     readonly_fields = ['created_at']
 
-# Cart models have been removed from the system
+@admin.register(QuotationItem)
+class QuotationItemAdmin(admin.ModelAdmin):
+    list_display = ['id', 'quotation', 'get_vehicle_info', 'quantity', 'unit_price', 'get_total_price', 'created_at']
+    list_filter = ['created_at', 'truck_type']
+    search_fields = ['quotation__id', 'truck__registration_number', 'truck_type__name']
+    readonly_fields = ['created_at', 'updated_at', 'get_total_price']
+    
+    def get_vehicle_info(self, obj):
+        if obj.truck:
+            return f"{obj.truck.make} {obj.truck.model} ({obj.truck.registration_number})"
+        elif obj.truck_type:
+            return f"Type: {obj.truck_type.name}"
+        return "No vehicle assigned"
+    get_vehicle_info.short_description = 'Vehicle'
+    
+    def get_total_price(self, obj):
+        return f"₹{obj.get_total_price()}"
+    get_total_price.short_description = 'Total Price'
 
 
 # NEW TRACKING TRUCKS WORKFLOW - Admin Classes
@@ -71,12 +88,3 @@ class PriceRangeAdmin(admin.ModelAdmin):
     list_filter = ['chance_of_getting_deal', 'created_at']
     search_fields = ['enquiry__customer__name']
     readonly_fields = ['created_at']
-
-@admin.register(VendorEnquiryRequest)
-class VendorEnquiryRequestAdmin(admin.ModelAdmin):
-    list_display = ['id', 'enquiry', 'vendor', 'status', 'vendor_response_price', 'created_at']
-    list_filter = ['status', 'created_at']
-    search_fields = ['enquiry__customer__name', 'vendor__name']
-    readonly_fields = ['created_at', 'updated_at']
-
-# LEGACY MODELS - Marked for deprecation

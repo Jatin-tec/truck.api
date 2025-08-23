@@ -1,8 +1,29 @@
 services:
+  db:
+    image: postgres:15-alpine
+    container_name: postgres-db
+    environment:
+      - POSTGRES_DB=truck_api_db
+      - POSTGRES_USER=truck_user
+      - POSTGRES_PASSWORD=truck_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    restart: always
+
   web:
     build: ./
     container_name: django-web
-    command: python manage.py runserver 0.0.0.0:8000
+    command: >
+      sh -c "
+        echo 'Waiting for PostgreSQL to be ready...' &&
+        while ! nc -z db 5432; do sleep 1; done &&
+        echo 'PostgreSQL is ready!' &&
+        python manage.py makemigrations &&
+        python manage.py migrate &&
+        python manage.py runserver 0.0.0.0:8000
+      "
     volumes:
       - ./:/usr/src/app/
     ports:
@@ -10,6 +31,9 @@ services:
     restart: always
     env_file:
       - ./.env
+    depends_on:
+      - db
+      - redis
 
   redis:
     image: redis:latest
@@ -17,3 +41,6 @@ services:
     ports:
       - 6379:6379
     restart: always
+
+volumes:
+  postgres_data:

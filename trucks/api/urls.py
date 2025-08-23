@@ -11,6 +11,7 @@ urlpatterns = [
     
     # Vendor APIs
     path('vendor/my-trucks/', views.VendorTrucksView.as_view(), name='vendor-trucks'),
+    path('vendor/my-trucks/<int:pk>/', views.VendorTruckDetailView.as_view(), name='vendor-truck-detail'),
     path('vendor/drivers/', views.DriverListCreateView.as_view(), name='driver-list-create'),
     path('vendor/drivers/<int:pk>/', views.DriverDetailView.as_view(), name='driver-detail'),
     path('vendor/upload-image/', views.TruckImageUploadView.as_view(), name='upload-truck-image'),

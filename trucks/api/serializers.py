@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from trucks.models import TruckType, Truck, TruckImage, Driver, TruckLocation
 from django.contrib.auth import get_user_model
+from django.utils import timezone
+from datetime import timedelta
 
 User = get_user_model()
 
@@ -148,7 +150,140 @@ class TruckImageUploadSerializer(serializers.ModelSerializer):
         fields = ['truck', 'image', 'caption', 'is_primary']
 
     def create(self, validated_data):
-        # Ensure only one primary image per truck
+        # If this image is set as primary, remove primary flag from other images of the same truck
         if validated_data.get('is_primary', False):
             TruckImage.objects.filter(truck=validated_data['truck'], is_primary=True).update(is_primary=False)
         return super().create(validated_data)
+
+
+class VendorTruckDetailSerializer(serializers.ModelSerializer):
+    """Comprehensive truck details for vendor with all related data"""
+    truck_type = TruckTypeSerializer(read_only=True)
+    images = TruckImageSerializer(many=True, read_only=True)
+    assigned_driver = serializers.SerializerMethodField()
+    routes_count = serializers.SerializerMethodField()
+    available_routes = serializers.SerializerMethodField()
+    recent_locations = serializers.SerializerMethodField()
+    documents_status = serializers.SerializerMethodField()
+    performance_stats = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Truck
+        fields = [
+            'id', 'truck_type', 'registration_number', 'capacity', 
+            'make', 'model', 'year', 'color', 'availability_status', 'base_price_per_km',
+            'current_location_latitude', 'current_location_longitude', 'current_location_address',
+            'images', 'assigned_driver', 'routes_count', 'available_routes', 
+            'recent_locations', 'documents_status', 'performance_stats',
+            'is_active', 'created_at', 'updated_at'
+        ]
+
+    def get_assigned_driver(self, obj):
+        """Get assigned driver details"""
+        driver = obj.assigned_driver.first()  # Get assigned driver using related name
+        if driver:
+            return {
+                'id': driver.id,
+                'name': driver.name,
+                'phone_number': driver.phone_number,
+                'license_number': driver.license_number,
+                'license_expiry_date': driver.license_expiry_date,
+                'experience_years': driver.experience_years,
+                'is_available': driver.is_available,
+                'profile_image': driver.profile_image.url if driver.profile_image else None
+            }
+        return None
+
+    def get_routes_count(self, obj):
+        """Count of routes this vendor operates (truck can serve any vendor route)"""
+        return obj.vendor.routes.filter(is_active=True).count()
+
+    def get_available_routes(self, obj):
+        """Get vendor's routes where this truck type has pricing"""
+        from quotations.models import Route, RoutePricing
+        
+        # Get vendor's routes that have pricing for this truck type
+        routes = Route.objects.filter(
+            vendor=obj.vendor,
+            is_active=True,
+            pricing__truck_type=obj.truck_type
+        ).distinct()[:5]  # Limit to recent 5 routes
+        
+        routes_data = []
+        for route in routes:
+            # Get pricing for this truck type on this route
+            pricing = RoutePricing.objects.filter(
+                route=route, 
+                truck_type=obj.truck_type
+            ).first()
+            
+            routes_data.append({
+                'id': route.id,
+                'route_name': route.route_name,
+                'origin_city': route.origin_city,
+                'destination_city': route.destination_city,
+                'total_distance_km': str(route.total_distance_km),
+                'route_frequency': route.route_frequency,
+                'pricing': {
+                    'min_price': str(pricing.min_price) if pricing else None,
+                    'max_price': str(pricing.max_price) if pricing else None,
+                    'base_price': str(pricing.base_price) if pricing else None,
+                } if pricing else None
+            })
+        
+        return routes_data
+
+    def get_recent_locations(self, obj):
+        """Get recent location history"""
+        locations = obj.location_history.all()[:10]  # Last 10 locations
+        return [{
+            'latitude': str(location.latitude),
+            'longitude': str(location.longitude),
+            'address': location.address,
+            'timestamp': location.timestamp
+        } for location in locations]
+
+    def get_documents_status(self, obj):
+        """Get documents status summary"""
+        documents = obj.documents.filter(is_active=True)
+        total_docs = documents.count()
+        expiring_soon = documents.filter(
+            expiry_date__lte=timezone.now().date() + timedelta(days=30),
+            expiry_date__gt=timezone.now().date()
+        ).count()
+        expired = documents.filter(
+            expiry_date__lt=timezone.now().date()
+        ).count()
+        
+        return {
+            'total_documents': total_docs,
+            'expiring_soon': expiring_soon,
+            'expired': expired,
+            'status': 'expired' if expired > 0 else 'expiring_soon' if expiring_soon > 0 else 'valid'
+        }
+
+    def get_performance_stats(self, obj):
+        """Get basic performance stats"""
+        from orders.models import Order
+        
+        # Get orders for this truck in last 30 days
+        thirty_days_ago = timezone.now() - timedelta(days=30)
+        recent_orders = Order.objects.filter(
+            truck=obj,
+            created_at__gte=thirty_days_ago
+        )
+        
+        completed_orders = recent_orders.filter(status='completed')
+        
+        return {
+            'total_orders_30_days': recent_orders.count(),
+            'completed_orders_30_days': completed_orders.count(),
+            'completion_rate': (
+                round((completed_orders.count() / recent_orders.count()) * 100, 2) 
+                if recent_orders.count() > 0 else 0
+            ),
+            'average_rating': None,  # Could be implemented later
+            'total_earnings_30_days': sum(
+                order.total_amount for order in completed_orders if order.total_amount
+            ) or 0
+        }

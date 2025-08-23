@@ -1,6 +1,7 @@
 from django.db import models
 from django.conf import settings
 from trucks.models import Truck, TruckType
+from .enums import QuotationStatus, NegotiationInitiator, UrgencyLevel, WeightUnit
 
 class QuotationRequest(models.Model):
     """Customer's order request - unique for origin-destination and pickup-drop date"""
@@ -18,19 +19,9 @@ class QuotationRequest(models.Model):
     pickup_date = models.DateField(default='2024-01-01')
     drop_date = models.DateField(default='2024-01-01')
     weight = models.DecimalField(max_digits=8, decimal_places=2, help_text="Weight", default=0)
-    weight_unit = models.CharField(max_length=10, choices=[
-        ('kg', 'Kilogram'),
-        ('ton', 'Ton'),
-        ('lbs', 'Pounds')
-    ], default='kg')
+    weight_unit = models.CharField(max_length=10, choices=WeightUnit.choices, default=WeightUnit.KG)
     vehicle_type = models.CharField(max_length=50, help_text="Type of vehicle needed", default='Truck')
-    urgency_level = models.CharField(max_length=20, choices=[
-        ('low', 'Low'),
-        ('medium', 'Medium'), 
-        ('high', 'High'),
-        ('urgent', 'Urgent')
-    ], default='medium')
-    
+
     # Pickup details
     pickup_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     pickup_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
@@ -40,12 +31,7 @@ class QuotationRequest(models.Model):
     delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     delivery_address = models.TextField(blank=True)
-    
-    # Additional details
-    cargo_description = models.TextField(blank=True)
-    special_instructions = models.TextField(blank=True)
-    distance_km = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
-    
+
     # Status
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -53,7 +39,6 @@ class QuotationRequest(models.Model):
 
     class Meta:
         ordering = ['-created_at']
-        # Ensure uniqueness based on route and dates
         unique_together = ['customer', 'origin_pincode', 'destination_pincode', 'pickup_date', 'drop_date']
 
     def __str__(self):
@@ -65,14 +50,6 @@ class QuotationRequest(models.Model):
 
 class Quotation(models.Model):
     """Vendor's quotation for a quotation request"""
-    STATUS_CHOICES = [
-        ('pending', 'Pending'),
-        ('sent', 'Sent'),
-        ('negotiating', 'Under Negotiation'),
-        ('accepted', 'Accepted'),
-        ('rejected', 'Rejected'),
-        ('expired', 'Expired'),
-    ]
 
     quotation_request = models.ForeignKey(
         QuotationRequest, 
@@ -87,22 +64,27 @@ class Quotation(models.Model):
         related_name='quotations',
         limit_choices_to={'role': 'vendor'}
     )
-    vendor_name = models.CharField(max_length=200, default='Unknown Vendor')
-    # Items (vehicles) included in this quotation
-    items = models.JSONField(default=list, help_text="List of vehicle items with details")
+    
+    # Store vendor name for performance (avoid joins)
+    vendor_name = models.CharField(max_length=100, help_text="Cached vendor name")
+    
     # Overall pricing details
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     # Terms
     terms_and_conditions = models.TextField(blank=True)
     validity_hours = models.PositiveIntegerField(default=24, help_text="Quote validity in hours")
-    # Response to customer's suggested price
-    customer_suggested_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    vendor_response_to_suggestion = models.TextField(blank=True, help_text="Vendor's response to customer's suggested price")
-    # Status
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    
+    # Urgency and Status
+    urgency_level = models.CharField(max_length=20, choices=UrgencyLevel.choices, default=UrgencyLevel.MEDIUM)
+    status = models.CharField(max_length=20, choices=QuotationStatus.choices, default=QuotationStatus.PENDING)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # Additional details
+    cargo_description = models.TextField(blank=True)
+    special_instructions = models.TextField(blank=True)
+    distance_km = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']
@@ -111,20 +93,108 @@ class Quotation(models.Model):
     def __str__(self):
         return f"Quotation {self.id} - ₹{self.total_amount}"
 
+class QuotationItem(models.Model):
+    """Vehicle item included in a quotation - stores only quote-specific data"""
+    quotation = models.ForeignKey(
+        Quotation,
+        on_delete=models.CASCADE,
+        related_name='items'
+    )
+    
+    # Vehicle reference - either specific truck OR truck type for flexible quotes
+    truck = models.ForeignKey(
+        'trucks.Truck',
+        on_delete=models.SET_NULL,
+        related_name='quotation_items',
+        null=True, blank=True,
+        help_text="Specific truck if assigned"
+    )
+    truck_type = models.ForeignKey(
+        'trucks.TruckType',
+        on_delete=models.CASCADE,
+        related_name='quotation_items',
+        null=True, blank=True,
+        help_text="Truck type for flexible quotes"
+    )
+    
+    # Quote-specific operational details
+    quantity = models.PositiveIntegerField(default=1, help_text="Number of vehicles of this type")
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, help_text="Quoted price per vehicle")
+    
+    # Quote-specific delivery details
+    estimated_delivery = models.DateField(null=True, blank=True, help_text="Estimated delivery date for this item")
+    pickup_locations = models.JSONField(default=list, blank=True, help_text="Specific pickup locations for this item")
+    drop_locations = models.JSONField(default=list, blank=True, help_text="Specific drop locations for this item")
+    
+    # Optional quote-specific notes
+    special_instructions = models.TextField(blank=True, help_text="Special instructions for this vehicle item")
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(truck__isnull=False) | models.Q(truck_type__isnull=False),
+                name='quotation_item_must_have_truck_or_type'
+            )
+        ]
+
+    def __str__(self):
+        if self.truck:
+            vehicle_info = f"{self.truck.make} {self.truck.model} ({self.truck.registration_number})"
+        else:
+            vehicle_info = f"{self.truck_type.name}"
+        return f"{self.quantity}x {vehicle_info} - ₹{self.unit_price} (Quotation {self.quotation.id})"
+    
+    def get_total_price(self):
+        """Calculate total price for this item"""
+        return self.quantity * self.unit_price
+    
+    def get_vehicle_details(self):
+        """Get vehicle specifications from the related truck or truck type"""
+        if self.truck:
+            return {
+                'type': self.truck.truck_type.name,
+                'make': self.truck.make,
+                'model': self.truck.model,
+                'capacity': self.truck.capacity,
+                'registration_number': self.truck.registration_number,
+                'year': self.truck.year,
+                'availability_status': self.truck.availability_status
+            }
+        elif self.truck_type:
+            return {
+                'type': self.truck_type.name,
+                'description': self.truck_type.description,
+                'make': None,
+                'model': None,
+                'capacity': None,
+                'registration_number': None,
+                'year': None,
+                'availability_status': 'available'  # Generic truck type is assumed available
+            }
+        return {}
+
+    def __str__(self):
+        vehicle_info = self.vehicle_model or self.vehicle_type or f"Vehicle {self.vehicle_id}"
+        return f"{self.quantity}x {vehicle_info} - ₹{self.unit_price} (Quotation {self.quotation.id})"
+    
+    def get_total_price(self):
+        """Calculate total price for this item"""
+        return self.quantity * self.unit_price
 
 class QuotationNegotiation(models.Model):
     """Track negotiation history between customer and vendor"""
-    INITIATOR_CHOICES = [
-        ('customer', 'Customer'),
-        ('vendor', 'Vendor'),
-    ]
 
     quotation = models.ForeignKey(
         Quotation, 
         on_delete=models.CASCADE, 
         related_name='negotiations'
     )
-    initiated_by = models.CharField(max_length=10, choices=INITIATOR_CHOICES)
+    initiated_by = models.CharField(max_length=10, choices=NegotiationInitiator.choices)
     proposed_amount = models.DecimalField(max_digits=10, decimal_places=2)
     message = models.TextField(blank=True)
     
@@ -194,7 +264,6 @@ class Route(models.Model):
     def __str__(self):
         return f"{self.vendor.name}: {self.route_name}"
 
-
 class RouteStop(models.Model):
     """Intermediate stops in a route"""
     route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='stops')
@@ -223,7 +292,6 @@ class RouteStop(models.Model):
 
     def __str__(self):
         return f"{self.route.route_name} - Stop {self.stop_order}: {self.stop_city}"
-
 
 class RoutePricing(models.Model):
     """Pricing for different segments of a route"""
@@ -268,7 +336,6 @@ class RoutePricing(models.Model):
         """Calculate total price for this segment"""
         return (self.base_price + self.fuel_charges + self.toll_charges + 
                 self.loading_charges + self.unloading_charges)
-
 
 class CustomerEnquiry(models.Model):
     """Customer enquiry without vendor visibility"""
@@ -394,62 +461,3 @@ class PriceRange(models.Model):
 
     def __str__(self):
         return f"₹{self.min_price}-₹{self.max_price} ({self.chance_of_getting_deal} chance)"
-
-
-class VendorEnquiryRequest(models.Model):
-    """Manager's request to vendors for specific enquiry"""
-    REQUEST_STATUS_CHOICES = [
-        ('sent', 'Sent to Vendor'),
-        ('viewed', 'Viewed by Vendor'),
-        ('quoted', 'Vendor Quoted'),
-        ('accepted', 'Vendor Accepted'),
-        ('rejected', 'Vendor Rejected'),
-        ('expired', 'Expired'),
-    ]
-    
-    enquiry = models.ForeignKey(CustomerEnquiry, on_delete=models.CASCADE, related_name='vendor_requests')
-    vendor = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='received_enquiry_requests',
-        limit_choices_to={'role': 'vendor'}
-    )
-    price_range = models.ForeignKey(PriceRange, on_delete=models.CASCADE)
-    route = models.ForeignKey(Route, on_delete=models.CASCADE, null=True, blank=True)
-    
-    # Manager details
-    sent_by_manager = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='sent_vendor_requests',
-        limit_choices_to={'role': 'manager'}
-    )
-    
-    # Request details
-    suggested_price = models.DecimalField(max_digits=10, decimal_places=2)
-    manager_notes = models.TextField(blank=True)
-    urgency_level = models.CharField(max_length=10, choices=[
-        ('low', 'Low'),
-        ('medium', 'Medium'),
-        ('high', 'High'),
-        ('urgent', 'Urgent')
-    ], default='medium')
-    
-    # Response tracking
-    status = models.CharField(max_length=20, choices=REQUEST_STATUS_CHOICES, default='sent')
-    vendor_response_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    vendor_response_notes = models.TextField(blank=True)
-    response_date = models.DateTimeField(null=True, blank=True)
-    
-    # Validity
-    valid_until = models.DateTimeField()
-    
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        unique_together = ['enquiry', 'vendor', 'price_range']
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"Request to {self.vendor.name} for Enquiry {self.enquiry.id}"

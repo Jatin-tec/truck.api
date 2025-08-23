@@ -2,8 +2,6 @@ from django.urls import path
 from quotations.api import views
 
 urlpatterns = [
-    # QUOTATION CREATION FLOW
-    
     # Customer APIs
     path('customer/requests/', views.CustomerQuotationRequestsView.as_view(), name='customer-quotation-requests'),
     path('customer/quotations/', views.CustomerQuotationsView.as_view(), name='customer-quotations'),
