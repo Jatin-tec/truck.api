@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from orders.models import Order, OrderStatusHistory, OrderTracking, OrderDocument
+from orders.models import Order, OrderStatusHistory, OrderDocument
 from django.contrib.auth import get_user_model
 import random
 import string
@@ -82,47 +82,21 @@ class OrderCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Quotation not found or not accepted")
 
     def create(self, validated_data):
+        """Create order using centralized OrderCreationService"""
+        from orders.services import OrderCreationService
+        
         quotation = validated_data['quotation_id']
+        user = self.context['request'].user
         
-        # Generate delivery OTP
-        delivery_otp = ''.join(random.choices(string.digits, k=6))
-        
-        # Create order from quotation data
-        order = Order.objects.create(
+        # Use centralized service for order creation
+        order_result = OrderCreationService.create_order_from_quotation(
             quotation=quotation,
-            customer=quotation.quotation_request.customer,
-            vendor=quotation.vendor,
-            truck=quotation.quotation_request.truck,
-            pickup_address=quotation.quotation_request.pickup_address,
-            delivery_address=quotation.quotation_request.delivery_address,
-            pickup_latitude=quotation.quotation_request.pickup_latitude,
-            pickup_longitude=quotation.quotation_request.pickup_longitude,
-            delivery_latitude=quotation.quotation_request.delivery_latitude,
-            delivery_longitude=quotation.quotation_request.delivery_longitude,
-            scheduled_pickup_date=quotation.quotation_request.pickup_date,
-            scheduled_delivery_date=quotation.quotation_request.expected_delivery_date,
-            total_amount=quotation.total_amount,
-            cargo_description=quotation.quotation_request.cargo_description,
-            estimated_weight=quotation.quotation_request.estimated_weight,
+            user=user,
             special_instructions=validated_data.get('special_instructions', ''),
-            delivery_instructions=validated_data.get('delivery_instructions', ''),
-            delivery_otp=delivery_otp,
-            status='created'
+            delivery_instructions=validated_data.get('delivery_instructions', '')
         )
         
-        # Update truck status to busy
-        quotation.quotation_request.truck.availability_status = 'busy'
-        quotation.quotation_request.truck.save()
-        
-        # Create status history
-        OrderStatusHistory.objects.create(
-            order=order,
-            new_status='created',
-            updated_by=self.context['request'].user,
-            notes='Order created from accepted quotation'
-        )
-        
-        return order
+        return order_result['order']
 
 class OrderStatusUpdateSerializer(serializers.Serializer):
     """Serializer for updating order status"""
@@ -143,11 +117,6 @@ class OrderStatusUpdateSerializer(serializers.Serializer):
     actual_weight = serializers.DecimalField(max_digits=8, decimal_places=2, required=False)
     latitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False)
     longitude = serializers.DecimalField(max_digits=9, decimal_places=6, required=False)
-
-class OrderTrackingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = OrderTracking
-        fields = ['id', 'latitude', 'longitude', 'address', 'speed', 'heading', 'timestamp']
 
 class OrderStatusHistorySerializer(serializers.ModelSerializer):
     updated_by_name = serializers.CharField(source='updated_by.name', read_only=True)

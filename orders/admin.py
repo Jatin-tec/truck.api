@@ -1,5 +1,5 @@
 from django.contrib import admin
-from orders.models import Order, OrderStatusHistory, OrderTracking, OrderDocument
+from orders.models import Order, OrderStatusHistory, OrderDocument
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
@@ -12,12 +12,6 @@ class OrderAdmin(admin.ModelAdmin):
 class OrderStatusHistoryAdmin(admin.ModelAdmin):
     list_display = ['order', 'previous_status', 'new_status', 'updated_by', 'timestamp']
     list_filter = ['new_status', 'timestamp']
-    readonly_fields = ['timestamp']
-
-@admin.register(OrderTracking)
-class OrderTrackingAdmin(admin.ModelAdmin):
-    list_display = ['order', 'latitude', 'longitude', 'timestamp']
-    list_filter = ['timestamp']
     readonly_fields = ['timestamp']
 
 @admin.register(OrderDocument)

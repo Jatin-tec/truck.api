@@ -343,8 +343,10 @@ class QuotationAcceptView(APIView, StandardizedResponseMixin):
                 status_code=status.HTTP_404_NOT_FOUND
             )
 
+        negotiation = QuotationNegotiation.objects.filter(quotation=quotation).last()
+
         # Use service layer for acceptance logic
-        acceptance_result = QuotationStatusService.accept_quotation(quotation)
+        acceptance_result = QuotationStatusService.accept_negotiation(negotiation, request.user)
         
         response_data = {
             'quotation': {

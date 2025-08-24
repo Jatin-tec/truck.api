@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
 from .models import Quotation, QuotationRequest, QuotationNegotiation, QuotationItem
+from orders.models import Order, OrderStatusHistory
 from .enums import (
     QuotationStatus, NegotiationInitiator, BusinessRules, 
     ErrorMessages, ResponseMessages
@@ -325,29 +326,6 @@ class NegotiationService:
         
         return negotiation
 
-    @staticmethod
-    def accept_negotiation(quotation, user_role):
-        """
-        Enhanced negotiation acceptance with business rules.
-        """
-        # Only customers can accept quotations/negotiations
-        if user_role != 'customer':
-            raise ValidationError({'authorization': ['Only customers can accept quotations']})
-        
-        # Check if quotation can be accepted
-        if quotation.status not in [QuotationStatus.PENDING, QuotationStatus.SENT, QuotationStatus.NEGOTIATING]:
-            raise ValidationError({'status': ['Quotation cannot be accepted in current status']})
-        
-        # Check expiry
-        if QuotationStatusValidator.validate_quotation_expiry(quotation):
-            raise ValidationError({'expiry': ['Quotation has expired']})
-        
-        # Update status
-        quotation.status = QuotationStatus.ACCEPTED
-        quotation.save()
-        
-        return quotation
-
 
 class QuotationStatusService:
     """Enhanced status management service"""
@@ -405,10 +383,51 @@ class QuotationStatusService:
         return expired_count
 
     @staticmethod
+    def accept_negotiation(negotiation, user):
+        """
+        Accept a negotiation and create an order using the new OrderCreationService.
+        
+        Args:
+            negotiation: QuotationNegotiation instance to accept
+            user: User accepting the negotiation (should be customer)
+            
+        Returns:
+            Dict containing order creation results
+        """
+        from orders.services import OrderCreationService
+
+        # Validate that user or vendor can accept this negotiation
+        if negotiation.quotation.quotation_request.customer == user or negotiation.quotation.vendor == user:
+            pass
+        else:
+            raise ValidationError("You can only accept negotiations for your own quotations")
+
+        # Create order using the new centralized service
+        order_result = OrderCreationService.create_order_from_negotiation(
+            negotiation=negotiation,
+            user=user
+        )
+
+        # Update quotation status to accepted
+        quotation = negotiation.quotation
+        quotation.status = QuotationStatus.ACCEPTED
+        quotation.save()
+        
+        return {
+            'success': True,
+            'message': 'Negotiation accepted and order created successfully',
+            'negotiation': negotiation,
+            'order': order_result['order'],
+            'order_metadata': order_result
+        }
+
+    @staticmethod
     def get_quotation_analytics(quotation):
         """
         Enhanced analytics for quotation performance.
         """
+        from django.utils import timezone
+        
         negotiations = quotation.negotiations.all()
         
         return {

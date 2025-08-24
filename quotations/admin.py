@@ -20,6 +20,8 @@ class QuotationAdmin(admin.ModelAdmin):
     search_fields = ['quotation_request__customer__name']
     readonly_fields = ['created_at', 'updated_at']
 
+    
+
 @admin.register(QuotationNegotiation)
 class QuotationNegotiationAdmin(admin.ModelAdmin):
     list_display = ['id', 'quotation', 'initiated_by', 'proposed_amount', 'created_at']

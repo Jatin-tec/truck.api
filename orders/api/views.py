@@ -4,10 +4,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
 from django.utils import timezone
-from orders.models import Order, OrderStatusHistory, OrderTracking, OrderDocument
+from orders.models import Order, OrderStatusHistory, OrderDocument
 from orders.api.serializers import (
     OrderSerializer, OrderCreateSerializer, OrderStatusUpdateSerializer,
-    OrderTrackingSerializer, OrderStatusHistorySerializer, OrderDocumentSerializer,
+    OrderStatusHistorySerializer, OrderDocumentSerializer,
     OrderDocumentUploadSerializer, DeliveryVerificationSerializer, 
     AssignDriverSerializer, OrderListSerializer
 )
@@ -55,9 +55,8 @@ class OrderDetailView(generics.RetrieveAPIView):
         else:  # vendor
             return Order.objects.filter(vendor=user, is_active=True)
 
-# Order Status Management
 class OrderStatusUpdateView(APIView):
-    """Update order status (vendor only)"""
+    """Update order status using centralized OrderStatusTrackingService"""
     permission_classes = [IsVendor]
     
     def post(self, request, order_id):
@@ -72,61 +71,46 @@ class OrderStatusUpdateView(APIView):
             serializer.is_valid(raise_exception=True)
             
             data = serializer.validated_data
-            previous_status = order.status
-            new_status = data['status']
             
-            # Validate status transition
-            if not self._is_valid_status_transition(previous_status, new_status):
-                return error_response(
-                    f'Invalid status transition from {previous_status} to {new_status}',
-                    status.HTTP_400_BAD_REQUEST
-                )
+            # Use centralized status tracking service
+            from orders.services import OrderStatusTrackingService
             
-            # Update order
-            order.status = new_status
-            
-            # Handle specific status updates
-            if new_status == 'driver_assigned' and 'driver_id' in data:
-                order.driver_id = data['driver_id']
-            elif new_status == 'picked_up':
-                order.actual_pickup_date = timezone.now()
-                if 'actual_weight' in data:
-                    order.actual_weight = data['actual_weight']
-            elif new_status == 'delivered':
-                order.actual_delivery_date = timezone.now()
-                
-            order.save()
-            
-            # Create status history
-            OrderStatusHistory.objects.create(
+            status_result = OrderStatusTrackingService.update_order_status(
                 order=order,
-                previous_status=previous_status,
-                new_status=new_status,
+                new_status=data['status'],
                 updated_by=request.user,
                 notes=data.get('notes', ''),
-                location_latitude=data.get('latitude'),
-                location_longitude=data.get('longitude')
+                latitude=data.get('latitude'),
+                longitude=data.get('longitude'),
+                driver_id=data.get('driver_id'),
+                actual_weight=data.get('actual_weight')
             )
             
-            # Update truck availability when order is completed/cancelled
-            if new_status in ['completed', 'cancelled']:
-                order.truck.availability_status = 'available'
-                order.truck.save()
-            
-            return Response({
-                'message': f'Order status updated to {new_status}',
-                'order_id': order.id,
-                'new_status': new_status
-            })
+            return success_response(
+                data={
+                    'order_id': order.id,
+                    'previous_status': status_result['previous_status'],
+                    'new_status': status_result['new_status'],
+                    'status_history_id': status_result['status_history'].id,
+                    'context': status_result['context']
+                },
+                message=f'Order status updated to {data["status"]}'
+            )
             
         except Order.DoesNotExist:
-            return Response(
-                {'error': 'Order not found or not owned by you'},
-                status=status.HTTP_404_NOT_FOUND
+            return error_response(
+                'Order not found or not owned by you',
+                status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return error_response(
+                str(e),
+                status.HTTP_400_BAD_REQUEST
             )
 
     def _is_valid_status_transition(self, current, new):
-        """Validate if status transition is allowed"""
+        """DEPRECATED: Use OrderStatusTrackingService.VALID_TRANSITIONS instead"""
+        # Keep for backward compatibility if needed elsewhere
         valid_transitions = {
             'created': ['confirmed', 'cancelled'],
             'confirmed': ['driver_assigned', 'cancelled'],
@@ -183,70 +167,6 @@ class AssignDriverView(APIView):
         except Order.DoesNotExist:
             return Response(
                 {'error': 'Order not found, not confirmed, or not owned by you'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-# Order Tracking
-class OrderTrackingView(generics.ListAPIView):
-    """Get tracking history for an order"""
-    serializer_class = OrderTrackingSerializer
-    permission_classes = [IsCustomerOrVendor]
-    
-    def get_queryset(self):
-        order_id = self.kwargs['order_id']
-        user = self.request.user
-        
-        # Verify user has access to this order
-        try:
-            if user.role == 'customer':
-                order = Order.objects.get(id=order_id, customer=user)
-            else:  # vendor
-                order = Order.objects.get(id=order_id, vendor=user)
-        except Order.DoesNotExist:
-            return OrderTracking.objects.none()
-        
-        return OrderTracking.objects.filter(order_id=order_id).order_by('-timestamp')
-
-class UpdateOrderLocationView(APIView):
-    """Update order location for tracking (vendor/driver)"""
-    permission_classes = [IsVendor]
-    
-    def post(self, request, order_id):
-        try:
-            order = Order.objects.get(
-                id=order_id,
-                vendor=request.user,
-                status__in=['pickup', 'picked_up', 'in_transit'],
-                is_active=True
-            )
-            
-            latitude = request.data.get('latitude')
-            longitude = request.data.get('longitude')
-            address = request.data.get('address', '')
-            speed = request.data.get('speed')
-            heading = request.data.get('heading')
-            
-            if not latitude or not longitude:
-                return Response(
-                    {'error': 'Latitude and longitude are required'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Create tracking entry
-            OrderTracking.objects.create(
-                order=order,
-                latitude=latitude,
-                longitude=longitude,
-                address=address,
-                speed=speed,
-                heading=heading
-            )
-            
-            return Response({'message': 'Location updated successfully'})
-            
-        except Order.DoesNotExist:
-            return Response(
-                {'error': 'Order not found or not in trackable status'},
                 status=status.HTTP_404_NOT_FOUND
             )
 

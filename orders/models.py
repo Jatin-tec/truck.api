@@ -3,6 +3,7 @@ from django.conf import settings
 from quotations.models import Quotation
 from trucks.models import Truck, Driver
 
+
 class Order(models.Model):
     STATUS_CHOICES = [
         ('created', 'Order Created'),
@@ -33,7 +34,7 @@ class Order(models.Model):
         related_name='vendor_orders',
         limit_choices_to={'role': 'vendor'}
     )
-    truck = models.ForeignKey(Truck, on_delete=models.CASCADE, related_name='orders')
+    truck = models.ForeignKey(Truck, on_delete=models.CASCADE, related_name='orders', null=True, blank=True)
     driver = models.ForeignKey(
         Driver, 
         on_delete=models.SET_NULL, 
@@ -94,6 +95,7 @@ class Order(models.Model):
             self.order_number = f"ORD{timestamp}"
         super().save(*args, **kwargs)
 
+
 class OrderStatusHistory(models.Model):
     """Track order status changes"""
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='status_history')
@@ -111,21 +113,6 @@ class OrderStatusHistory(models.Model):
     def __str__(self):
         return f"Order {self.order.order_number}: {self.previous_status} → {self.new_status}"
 
-class OrderTracking(models.Model):
-    """Real-time tracking of order location"""
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='tracking_history')
-    latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6)
-    address = models.TextField(blank=True)
-    speed = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Speed in km/h")
-    heading = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Direction in degrees")
-    timestamp = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['-timestamp']
-
-    def __str__(self):
-        return f"Tracking for Order {self.order.order_number} at {self.timestamp}"
 
 class OrderDocument(models.Model):
     """Documents related to an order (e.g., pickup receipt, delivery receipt, photos)"""
